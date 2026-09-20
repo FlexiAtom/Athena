@@ -21,7 +21,7 @@ use crate::config::Config;
 use crate::context;
 use crate::document::{content_hash, Document, Frontmatter, Kind, Outcome};
 use crate::error::{Error, Result};
-use crate::items::{find_item, list_items, Item};
+use crate::items::{find_item, is_item_doc_rel, list_items, list_unparseable, Item};
 use crate::rules::{self, Finding, Level, ValidationCtx};
 use crate::store::{Store, STATUSES};
 use crate::templates;
@@ -296,6 +296,21 @@ pub fn validate(store: &Store, project: &str) -> Result<bool> {
             }
             println!("  {} [{}] {}", f.level.tag(), f.code, f.message);
         }
+    }
+    // 兑现"解析失败项由 validate 单独报告"的契约（§9.1）：这些文件在 list_items/context 里隐身，
+    // 若此处不扫，坏条目就既不报错也不显示（write 静默吞下 + 读侧静默跳过 的合谋）。
+    for (path, err) in list_unparseable(store, project) {
+        has_error = true;
+        total += 1;
+        let rel = path
+            .strip_prefix(&store.root)
+            .unwrap_or(path.as_path())
+            .display();
+        println!("\n── {rel}");
+        println!(
+            "  {} [Unparseable] 无法解析，已从 context/list_items 隐身，请补全 frontmatter：{err}",
+            Level::Error.tag()
+        );
     }
     // 入口文件膨胀检查（§1.1）。
     if let Some(w) = entry_budget_warning(store, project) {
@@ -625,7 +640,17 @@ pub fn write_path(store: &Store, rel: &str, content: &str) -> Result<()> {
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p)?;
     }
-    std::fs::write(&path, content)?;
+    // 工作项文档：落盘前校验并归一化（拒绝静默吞下坏 frontmatter）；
+    // 其它路径（pitfalls.md / terms / scratch 等）仍是原始状态文件网关（§1.1）。
+    let final_content = if is_item_doc_rel(rel) {
+        let mut doc = Document::parse(&path, content)?;
+        doc.fm.updated_by = actor();
+        doc.fm.updated_at = templates::now_iso();
+        doc.render() // 重算 content-hash（§13.2 第 2 层）
+    } else {
+        content.to_string()
+    };
+    std::fs::write(&path, final_content)?;
     Git::commit_paths(
         &store.root,
         &[srel(store, &path)],
@@ -647,7 +672,16 @@ pub fn append_path(store: &Store, rel: &str, content: &str) -> Result<()> {
         cur.push('\n');
     }
     cur.push_str(content);
-    std::fs::write(&path, cur)?;
+    // 工作项文档：追加进正文后重算 hash 与 updated-*（避免 content-hash 悬空）；坏 frontmatter 拒绝。
+    let final_content = if is_item_doc_rel(rel) {
+        let mut doc = Document::parse(&path, &cur)?;
+        doc.fm.updated_by = actor();
+        doc.fm.updated_at = templates::now_iso();
+        doc.render()
+    } else {
+        cur
+    };
+    std::fs::write(&path, final_content)?;
     Git::commit_paths(
         &store.root,
         &[srel(store, &path)],

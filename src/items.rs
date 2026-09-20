@@ -27,7 +27,7 @@ pub struct Item {
     pub doc: Document,
 }
 
-/// 列出某项目全部状态目录中的工作项。跳过解析失败项（由 validate 单独报告）。
+/// 列出某项目全部状态目录中的工作项。跳过解析失败项（改由 `list_unparseable` 供 validate 报告）。
 pub fn list_items(store: &Store, project: &str) -> Result<Vec<Item>> {
     let mut out = Vec::new();
     for status in STATUSES {
@@ -51,6 +51,50 @@ pub fn list_items(store: &Store, project: &str) -> Result<Vec<Item>> {
         }
     }
     Ok(out)
+}
+
+/// 扫描"存在但解析失败"的工作项文件（§9.1）：兑现 `list_items` 注释承诺的"由 validate 单独报告"。
+/// 返回 `(路径, 错误原文)`，供 validate 标红——否则损坏条目会在 context/validate 双双隐身。
+pub fn list_unparseable(store: &Store, project: &str) -> Vec<(PathBuf, String)> {
+    let mut bad = Vec::new();
+    for status in STATUSES {
+        let dir = store.status_dir(project, status);
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if name == "pitfalls.md" || name == "meta.md" || name == "pending.md" {
+                continue;
+            }
+            if let Err(e) = Document::read(&path) {
+                bad.push((path, e.to_string()));
+            }
+        }
+    }
+    bad
+}
+
+/// 判定相对路径是否指向"工作项文档"（`projects/<p>/<status>/<name>.md`，排除 meta 名）。
+/// write/append 据此决定是否走 Document 校验+归一化，避免破坏通用状态文件网关（§1.1）。
+pub fn is_item_doc_rel(rel: &str) -> bool {
+    let mut it = rel
+        .split(['/', '\\'])
+        .filter(|s| !s.is_empty() && *s != ".");
+    let seg: Vec<&str> = match it.by_ref().take(4).collect::<Vec<_>>().as_slice() {
+        s if s.len() == 4 => s.to_vec(),
+        _ => return false,
+    };
+    let (projects, _project, status, file) = (seg[0], seg[1], seg[2], seg[3]);
+    projects == "projects"
+        && STATUSES.contains(&status)
+        && file.ends_with(".md")
+        && !matches!(file, "pitfalls.md" | "meta.md" | "pending.md")
 }
 
 /// 按 slug 查找工作项（slug 在项目内唯一，§5.2a）。返回找到的项；多个则报错消歧。

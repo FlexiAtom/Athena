@@ -80,18 +80,37 @@ impl Git {
         if paths.is_empty() {
             return Self::commit_all(root, summary, actor);
         }
-        let mut args: Vec<String> = vec!["add".into(), "-A".into(), "--".into()];
+        // 仅保留"可 add"的路径：存在于工作区，或已被 git 跟踪（删除需暂存）。
+        // 否则对"未跟踪且已消失"的路径（如手动入池未提交、随后被移动）跑 git add 会因
+        // pathspec 无匹配而硬报错——过滤掉它，让移动类动作对非常规来源也稳健。
+        let mut addable: Vec<String> = Vec::new();
         for p in paths {
-            args.push(p.to_string_lossy().into_owned());
+            let s = p.to_string_lossy().into_owned();
+            if root.join(p).exists() || Self::is_tracked(root, p)? {
+                addable.push(s);
+            }
         }
-        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        check(&git(root, &refs)?, "git add")?;
+        if addable.is_empty() {
+            return Ok(());
+        }
+        let mut args: Vec<&str> = vec!["add", "-A", "--"];
+        for s in &addable {
+            args.push(s.as_str());
+        }
+        check(&git(root, &args)?, "git add")?;
         let dirty = git(root, &["diff", "--cached", "--quiet"])?.status.code() == Some(1);
         if !dirty {
             return Ok(());
         }
         let msg = format!("{summary}\n\nathena-actor: {actor}");
         check(&git(root, &["commit", "-q", "-m", &msg])?, "git commit")
+    }
+
+    /// 该路径（相对 root）是否已被 git 索引跟踪。
+    fn is_tracked(root: &Path, rel: &Path) -> Result<bool> {
+        let rel = rel.to_string_lossy().into_owned();
+        let out = git(root, &["ls-files", "--error-unmatch", "--", &rel])?;
+        Ok(out.status.success())
     }
 
     pub fn log(root: &Path, n: usize) -> Result<Vec<(String, String)>> {
