@@ -1,0 +1,23 @@
+[package]
+name = "athena"
+version = "0.1.0"
+edition = "2021"
+description = "Athena —— 面向 AI Agent 的工作协议 CLI（协议的执行边界）"
+
+[[bin]]
+name = "athena"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+toml = "0.8"
+toml_edit = "0.22"
+sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+anyhow = "1"
+
+[profile.release]
+opt-level = 2
