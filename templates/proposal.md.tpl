@@ -27,6 +27,7 @@ content-hash: sha256:pending
 | 假设 | 反证实验（具体命令/代码） | 预期若假设错 | 真实结果 |
 |---|---|---|---|
 |  |  |  |  |
+<!-- 明文契约：证据写进「真实结果」列（validate 按表头标签 evidence_tokens 识别，不认列位置；改词如"结论"→判无证据）。允许哪些标签改 ~/.Athena/terms.local.toml。 -->
 
 - 失效边界：<在什么环境下结论不成立>
 <!-- 无法实机时：promote --skip-falsification="<具象理由>" 会登记一条待清算项。 -->
