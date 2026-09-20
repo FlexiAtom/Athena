@@ -82,4 +82,6 @@ athena validate             # 自检报告（标红问题，不替你决定）
 
 ## 许可
 
-AGPL-3.0-or-later，详见 [`LICENSE`](./LICENSE)。
+Copyright © 2026 FlexiAtom
+
+本项目以 AGPL-3.0-or-later 授权，详见 [`LICENSE`](./LICENSE)。
