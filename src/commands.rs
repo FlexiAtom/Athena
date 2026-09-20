@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::context;
@@ -204,8 +204,9 @@ pub fn new_item(store: &Store, project: &str, slug: &str, kind: &str) -> Result<
     doc.fm.status = "pool".into();
     let path = store.status_dir(project, "pool").join(format!("{slug}.md"));
     doc.write(&path)?;
-    Git::commit_all(
+    Git::commit_paths(
         &store.root,
+        &[srel(store, &path)],
         &format!("new: pool/{slug} ({kind})"),
         &actor(),
     )?;
@@ -332,8 +333,21 @@ pub fn promote(store: &Store, project: &str, slug: &str, skip: Option<&str>) -> 
         });
     }
 
-    move_to_status(store, &mut doc, &it.path, project, slug, target)?;
-    Git::commit_all(&store.root, &format!("promote: {slug} → {target}"), &actor())?;
+    let src = it.path.clone();
+    let new_path = move_to_status(store, &mut doc, &it.path, project, slug, target)?;
+    let mut touched = vec![srel(store, &src), srel(store, &new_path)];
+    if skip.is_some() {
+        touched.push(srel(
+            store,
+            &store.project_dir(project).join("pending.md"),
+        ));
+    }
+    Git::commit_paths(
+        &store.root,
+        &touched,
+        &format!("promote: {slug} → {target}"),
+        &actor(),
+    )?;
     println!("✓ {slug}: {} → {target}", it.status);
     Ok(())
 }
@@ -384,9 +398,20 @@ pub fn complete(store: &Store, project: &str, slug: &str) -> Result<()> {
     }
     let mut doc = it.doc.clone();
     doc.fm.outcome = Some(Outcome::Done);
-    move_to_status(store, &mut doc, &it.path, project, slug, "finished")?;
+    let src = it.path.clone();
+    let new_path = move_to_status(store, &mut doc, &it.path, project, slug, "finished")?;
     clear_pending_entry(store, project, slug);
-    Git::commit_all(&store.root, &format!("complete: {slug} → finished(done)"), &actor())?;
+    let touched = vec![
+        srel(store, &src),
+        srel(store, &new_path),
+        srel(store, &store.project_dir(project).join("pending.md")),
+    ];
+    Git::commit_paths(
+        &store.root,
+        &touched,
+        &format!("complete: {slug} → finished(done)"),
+        &actor(),
+    )?;
     println!("✓ {slug}: working → finished (outcome: done)");
     Ok(())
 }
@@ -408,9 +433,20 @@ pub fn freeze(store: &Store, project: &str, slug: &str, reason: &str) -> Result<
     doc.fm.outcome = Some(Outcome::Frozen);
     doc.fm.falsification = None;
     doc.body = append_to_section(&doc.body, "决策", &format!("- 冻结原因：{reason}"));
-    move_to_status(store, &mut doc, &it.path, project, slug, "finished")?;
+    let src = it.path.clone();
+    let new_path = move_to_status(store, &mut doc, &it.path, project, slug, "finished")?;
     clear_pending_entry(store, project, slug);
-    Git::commit_all(&store.root, &format!("freeze: {slug} → finished(frozen)"), &actor())?;
+    let touched = vec![
+        srel(store, &src),
+        srel(store, &new_path),
+        srel(store, &store.project_dir(project).join("pending.md")),
+    ];
+    Git::commit_paths(
+        &store.root,
+        &touched,
+        &format!("freeze: {slug} → finished(frozen)"),
+        &actor(),
+    )?;
     println!("✓ {slug}: {} → finished (outcome: frozen)", it.status);
     Ok(())
 }
@@ -423,8 +459,14 @@ pub fn community(store: &Store, project: &str, slug: &str) -> Result<()> {
     }
     let mut doc = it.doc.clone();
     doc.fm.falsification = None;
-    move_to_status(store, &mut doc, &it.path, project, slug, "community")?;
-    Git::commit_all(&store.root, &format!("community: {slug} → community"), &actor())?;
+    let src = it.path.clone();
+    let new_path = move_to_status(store, &mut doc, &it.path, project, slug, "community")?;
+    Git::commit_paths(
+        &store.root,
+        &[srel(store, &src), srel(store, &new_path)],
+        &format!("community: {slug} → community"),
+        &actor(),
+    )?;
     println!("✓ {slug}: {} → community（放出去请人帮忙，供人搬运，非机器同步）", it.status);
     Ok(())
 }
@@ -442,8 +484,14 @@ pub fn resume(store: &Store, project: &str, slug: &str) -> Result<()> {
     if !doc.has_heading("反证实验") {
         println!("⚠ 重新推进要求重新剪枝（不能无声复活，§5.2）—— 当前无反证章节，请补。");
     }
-    move_to_status(store, &mut doc, &it.path, project, slug, "working")?;
-    Git::commit_all(&store.root, &format!("resume: {slug} → working"), &actor())?;
+    let src = it.path.clone();
+    let new_path = move_to_status(store, &mut doc, &it.path, project, slug, "working")?;
+    Git::commit_paths(
+        &store.root,
+        &[srel(store, &src), srel(store, &new_path)],
+        &format!("resume: {slug} → working"),
+        &actor(),
+    )?;
     println!("✓ {slug}: finished → working（请重新完成剪枝）");
     Ok(())
 }
@@ -473,8 +521,9 @@ pub fn deepen(store: &Store, project: &str, slug: &str, to: &str) -> Result<()> 
     let mut doc = it.doc.clone();
     doc.fm.kind = kind;
     doc.write(&it.path)?;
-    Git::commit_all(
+    Git::commit_paths(
         &store.root,
+        &[srel(store, &it.path)],
         &format!("deepen: {slug} kind → {}", kind.as_str()),
         &actor(),
     )?;
@@ -510,7 +559,12 @@ pub fn quick(store: &Store, project: &str, slug: &str, msg: &str, do_promote: bo
     );
     doc.body = append_to_section(&doc.body, "决策日志", &line);
     doc.write(&it.path)?;
-    Git::commit_all(&store.root, &format!("quick: {slug}"), &actor())?;
+    Git::commit_paths(
+        &store.root,
+        &[srel(store, &it.path)],
+        &format!("quick: {slug}"),
+        &actor(),
+    )?;
     println!("✓ quick 留痕已记入 {slug} 的 ## 决策日志（第 {} 次，上限 {}）", count + 1, terms.quick_limit);
     if do_promote {
         promote(store, project, slug, None)?;
@@ -529,7 +583,7 @@ pub fn write_path(store: &Store, rel: &str, content: &str) -> Result<()> {
         std::fs::create_dir_all(p)?;
     }
     std::fs::write(&path, content)?;
-    Git::commit_all(&store.root, &format!("write: {rel}"), &actor())?;
+    Git::commit_paths(&store.root, &[srel(store, &path)], &format!("write: {rel}"), &actor())?;
     println!("✓ 写入 {rel}");
     Ok(())
 }
@@ -546,7 +600,7 @@ pub fn append_path(store: &Store, rel: &str, content: &str) -> Result<()> {
     }
     cur.push_str(content);
     std::fs::write(&path, cur)?;
-    Git::commit_all(&store.root, &format!("append: {rel}"), &actor())?;
+    Git::commit_paths(&store.root, &[srel(store, &path)], &format!("append: {rel}"), &actor())?;
     println!("✓ 追加到 {rel}");
     Ok(())
 }
@@ -560,8 +614,9 @@ pub fn pitfall(store: &Store, project: &str, text: &str, global: bool) -> Result
     };
     let line = format!("- {text}  <!-- {} · {} -->", templates::today(), actor());
     append_to_markdown_file(&rel_target, &line)?;
-    Git::commit_all(
+    Git::commit_paths(
         &store.root,
+        &[srel(store, &rel_target)],
         &format!("pitfall({}): {}", if global { "global" } else { project }, truncate(text, 40)),
         &actor(),
     )?;
@@ -638,7 +693,12 @@ pub fn term_new(store: &Store, slug: &str, origin: Option<&str>) -> Result<()> {
         &store.terms_md(),
         &format!("\n## {slug}\n<!-- 定义与边界，AI 读。 -->\n"),
     )?;
-    Git::commit_all(&store.root, &format!("term new: {slug}"), &actor())?;
+    Git::commit_paths(
+        &store.root,
+        &[srel(store, &toml_path), srel(store, &store.terms_md())],
+        &format!("term new: {slug}"),
+        &actor(),
+    )?;
     println!("✓ 新增术语骨架 `{slug}`：编辑 terms.local.toml 的 [term.{slug}] 与 terms.md 后 `athena term validate`。");
     Ok(())
 }
@@ -654,7 +714,12 @@ fn need_item(store: &Store, project: &str, slug: &str) -> Result<Item> {
     })
 }
 
-/// 把工作项移动到目标状态目录：更新 frontmatter，写新文件，删旧文件。
+/// 相对状态库根的路径，用于 `git add -- <path>` 精确暂存本次动作真正触碰的文件。
+fn srel(store: &Store, p: &Path) -> PathBuf {
+    p.strip_prefix(&store.root).unwrap_or(p).to_path_buf()
+}
+
+/// 把工作项移动到目标状态目录：更新 frontmatter，写新文件，删旧文件。返回新文件路径。
 fn move_to_status(
     store: &Store,
     doc: &mut Document,
@@ -662,7 +727,7 @@ fn move_to_status(
     project: &str,
     slug: &str,
     target: &str,
-) -> Result<()> {
+) -> Result<PathBuf> {
     doc.fm.status = target.to_string();
     doc.fm.updated_at = templates::now_iso();
     doc.fm.updated_by = actor();
@@ -673,7 +738,7 @@ fn move_to_status(
     if old_path != new_path && old_path.exists() {
         std::fs::remove_file(old_path)?;
     }
-    Ok(())
+    Ok(new_path)
 }
 
 fn append_to_markdown_file(path: &Path, line: &str) -> Result<()> {

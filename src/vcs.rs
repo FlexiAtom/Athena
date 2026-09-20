@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{Error, Result};
@@ -50,6 +50,31 @@ impl Git {
     pub fn commit_all(root: &Path, summary: &str, actor: &str) -> Result<()> {
         check(&git(root, &["add", "-A"])?, "git add")?;
         // 无暂存变更时 diff --cached --quiet 返回 0，跳过提交避免空 commit。
+        let dirty = git(root, &["diff", "--cached", "--quiet"])?.status.code() == Some(1);
+        if !dirty {
+            return Ok(());
+        }
+        let msg = format!("{summary}\n\nathena-actor: {actor}");
+        check(&git(root, &["commit", "-q", "-m", &msg])?, "git commit")
+    }
+
+    /// 只暂存**指定路径**（相对 root）并提交——精确归因，避免 `add -A` 扫入无关挂起改动。
+    /// paths 为空则退化为 commit_all（兜底，如 init 的骨架批量落地）。
+    pub fn commit_paths(
+        root: &Path,
+        paths: &[PathBuf],
+        summary: &str,
+        actor: &str,
+    ) -> Result<()> {
+        if paths.is_empty() {
+            return Self::commit_all(root, summary, actor);
+        }
+        let mut args: Vec<String> = vec!["add".into(), "-A".into(), "--".into()];
+        for p in paths {
+            args.push(p.to_string_lossy().into_owned());
+        }
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        check(&git(root, &refs)?, "git add")?;
         let dirty = git(root, &["diff", "--cached", "--quiet"])?.status.code() == Some(1);
         if !dirty {
             return Ok(());
