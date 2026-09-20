@@ -80,6 +80,27 @@ impl TermsRegistry {
             .unwrap_or("warn")
     }
 
+    /// 反证明文契约允许的结果标签（§11 解析鲁棒性：按标签定位，不写死列序）。
+    /// 术语即配置：改 `terms.local.toml` 的 `[term.falsification].evidence_tokens` 即改校验规则。
+    pub fn falsification_evidence_tokens(&self) -> Vec<String> {
+        let from_cfg = self
+            .terms
+            .get("falsification")
+            .and_then(|t| t.extra.get("evidence_tokens"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|s| s.as_str())
+                    .map(|s| s.to_string())
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+        if !from_cfg.is_empty() {
+            return from_cfg;
+        }
+        vec!["真实结果".to_string(), "实测结果".to_string(), "实际结果".to_string()]
+    }
+
     /// 剪枝必填字段（来自 prune.require_fields），驱动 required_fields 规则（§6b）。
     pub fn prune_require_fields(&self) -> Vec<String> {
         self.terms

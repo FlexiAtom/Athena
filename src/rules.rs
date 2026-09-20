@@ -127,7 +127,7 @@ impl Rule for FalsificationRecorded {
         let pending = ctx.doc.body.contains("### 待测")
             || ctx.doc.body.contains("[pending]")
             || ctx.doc.fm.falsification.as_deref() == Some("pending");
-        let real = table_has_result(&section);
+        let real = table_has_result(&section, &ctx.terms.falsification_evidence_tokens());
         if !pending && !real {
             return vec![Finding {
                 level,
@@ -189,64 +189,66 @@ fn section_slice(body: &str, heading: &str) -> Option<String> {
     Some(out.join("\n"))
 }
 
-/// Markdown 表格中是否存在"真实结果"被填写。
-/// 按**表头**定位结果列（同义词匹配），不假设固定列序/列数——历史文档/简表常用 3 列，
-/// 早期实现写死第 4 列导致有证据却被判"无结果"（§11 解析鲁棒性）。
-fn table_has_result(section: &str) -> bool {
+/// 反证明文契约：表格里必须出现某个"结果标签"表头列（`tokens` 之一），且其下至少一个数据格非空。
+/// 按标签定位列，不认列序号——避免写死第 4 列导致 3 列简表假阴性（§11 解析鲁棒性）。
+/// 无任一识别标签 → 判为未满足契约（不再做"非空格即可"的宽松兜底）。
+fn table_has_result(section: &str, tokens: &[String]) -> bool {
     let is_sep = |t: &str| t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '));
-    let is_result = |c: &&str| {
-        matches!(
-            *c,
-            "真实结果" | "实际结果" | "真实输出" | "实测结果" | "结果" | "实测" | "实际"
-        )
-    };
+    let is_tok = |c: &&str| tokens.iter().any(|t| t == c);
     let rows: Vec<Vec<&str>> = section
         .lines()
         .map(|l| l.trim())
         .filter(|t| t.starts_with('|') && !is_sep(t))
         .map(|t| t.trim_matches('|').split('|').map(|c| c.trim()).collect())
         .collect();
-    // 优先：定位含结果字样的表头列，检查其下数据行非空。
     if let Some((hdr, col)) = rows.iter().enumerate().find_map(|(i, cells)| {
-        cells.iter().position(is_result).map(|c| (i, c))
+        cells.iter().position(is_tok).map(|c| (i, c))
     }) {
         return rows.iter().skip(hdr + 1).any(|cells| {
-            cells.get(col).map(|v| !v.is_empty() && !is_result(v)).unwrap_or(false)
+            cells.get(col).map(|v| !v.is_empty() && !is_tok(v)).unwrap_or(false)
         });
     }
-    // 退化：无结果表头时，任一非表头数据行存在非空单元格即算有内容。
-    rows.iter().any(|cells| {
-        !cells.iter().any(|c| *c == "假设") && cells.iter().any(|v| !v.is_empty())
-    })
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn toks() -> Vec<String> {
+        ["真实结果", "实测结果", "实际结果"].map(String::from).to_vec()
+    }
+
     #[test]
     fn empty_table_has_no_result() {
         let s = "| 假设 | 实验 | 预期 | 真实结果 |\n|---|---|---|---|\n|  |  |  |  |";
-        assert!(!table_has_result(s));
+        assert!(!table_has_result(s, &toks()));
     }
 
     #[test]
     fn filled_result_detected() {
         let s = "| 假设 | 实验 | 预期 | 真实结果 |\n|---|---|---|---|\n| A | `find` | x | 42 XML 0 命中 |";
-        assert!(table_has_result(s));
+        assert!(table_has_result(s, &toks()));
     }
 
     #[test]
     fn three_column_result_detected() {
         // 3 列简表，结果列在最后：早期按第 4 列判会漏（本次修复要覆盖的假阴性）。
         let s = "| 假设 | 依据 | 真实结果 |\n|---|---|---|\n| 覆盖非本意 | git stat | 成立，275→40 行 |";
-        assert!(table_has_result(s));
+        assert!(table_has_result(s, &toks()));
     }
 
     #[test]
     fn three_column_empty_not_result() {
         let s = "| 假设 | 依据 | 真实结果 |\n|---|---|---|\n|  |  |  |";
-        assert!(!table_has_result(s));
+        assert!(!table_has_result(s, &toks()));
+    }
+
+    #[test]
+    fn no_result_label_is_not_evidence() {
+        // 明文契约：没有约定标签列，即使别处有字也不算证据（不再宽松兜底）。
+        let s = "| 假设 | 依据 | 结论 |\n|---|---|---|\n| A | x | 成立 |";
+        assert!(!table_has_result(s, &toks()));
     }
 
     #[test]
