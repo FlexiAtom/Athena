@@ -1,0 +1,29 @@
+                    GNU AFFERO GENERAL PUBLIC LICENSE
+                       Version 3, 19 November 2007
+
+<!-- ⚠️ 占位待替换：请把 GNU AGPL-3.0 官方全文粘贴到此文件（覆盖本占位块及其下方内容）。
+     官方全文（纯文本）：https://www.gnu.org/licenses/agpl-3.0.txt
+     本环境无外网下载，故留此占位；发布前 LICENSE 必须是完整逐字文本。
+     粘贴后可删掉本 HTML 注释块，保留下方 Copyright / 如何应用两节并按需填写。 -->
+
+Copyright (C) 2026 FlexiAtom
+
+Everyone is permitted to copy and distribute verbatim copies of this license document, but changing it is not allowed.
+
+「如何把你程序的副本置于自由软件的约束下」——AGPL-3.0 附录建议在每个源文件顶部放置简短的版权与许可声明，例如：
+
+    Athena —— 面向 AI Agent 的工作协议 CLI
+    Copyright (C) 2026 FlexiAtom
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU Affero General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU Affero General Public License for more details.
+
+    You should have received a copy of the GNU Affero General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.

@@ -1,0 +1,125 @@
+name: Release
+
+# 打 `v*` 标签时触发：各平台原生 runner 编译 → 打包二进制 → 汇总成一个 GitHub Release。
+# 也可在 Actions 页手动 workflow_dispatch（填 tag）来演练。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（如 v0.1.0）"
+        required: true
+        default: "v0.1.0"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: tar.gz
+          - os: macos-14
+            target: aarch64-apple-darwin
+            ext: tar.gz
+          - os: macos-13
+            target: x86_64-apple-darwin
+            ext: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: zip
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    env:
+      # 事件字段经环境变量注入，避免把 tag 直接插进 shell；下游均引用 "$RELEASE_TAG"
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验 tag 格式（仅接受 vX.Y.Z[-pre]）
+        shell: bash
+        run: |
+          echo "发布 tag: $RELEASE_TAG"
+          printf '%s' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' \
+            || { echo "非法 tag（须匹配 vX.Y.Z[-pre]）"; exit 1; }
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 缓存 cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: 构建 release 二进制
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: 打包（Unix：tar.gz）
+        if: matrix.ext == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/athena"
+          pkg="athena-${RELEASE_TAG}-${{ matrix.target }}"
+          mkdir -p "$pkg"
+          cp "$bin" LICENSE README.md "$pkg"/
+          tar -czf "$pkg.tar.gz" "$pkg"
+          echo "artifact=$pkg.tar.gz" >> "$GITHUB_ENV"
+
+      - name: 打包（Windows：zip）
+        if: matrix.ext == 'zip'
+        shell: pwsh
+        run: |
+          $bin = "target/${{ matrix.target }}/release/athena.exe"
+          $pkg = "athena-$env:RELEASE_TAG-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path $pkg | Out-Null
+          Copy-Item $bin "$pkg/athena.exe"
+          Copy-Item LICENSE,README.md $pkg
+          Compress-Archive -Path "$pkg/*" -DestinationPath "$pkg.zip"
+          "artifact=$pkg.zip" >> $env:GITHUB_ENV
+
+      - name: 上传构件
+        uses: actions/upload-artifact@v4
+        with:
+          name: athena-${{ matrix.target }}
+          path: ${{ env.artifact }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载所有平台构件
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 创建 / 更新 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: artifacts/*
+          body: |
+            ## Athena ${{ github.event.inputs.tag || github.ref_name }}
+
+            各平台预编译二进制（含 `LICENSE`、`README.md`）：
+
+            | 平台 | target |
+            |---|---|
+            | Linux x86_64 | `x86_64-unknown-linux-gnu` |
+            | macOS (Apple Silicon) | `aarch64-apple-darwin` |
+            | macOS (Intel) | `x86_64-apple-darwin` |
+            | Windows x86_64 | `x86_64-pc-windows-msvc` |
+
+            > 本项目以 **AGPL-3.0-or-later** 授权。对应完整源码即本仓库该 tag 的源码，可从 [Source code](../../tree/${{ github.event.inputs.tag || github.ref_name }}) 获取。
+          generate_release_notes: true

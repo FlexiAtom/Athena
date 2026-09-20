@@ -3,6 +3,7 @@ name = "athena"
 version = "0.1.0"
 edition = "2021"
 description = "Athena —— 面向 AI Agent 的工作协议 CLI（协议的执行边界）"
+license = "AGPL-3.0-or-later"
 
 [[bin]]
 name = "athena"
