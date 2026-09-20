@@ -98,7 +98,11 @@ impl TermsRegistry {
         if !from_cfg.is_empty() {
             return from_cfg;
         }
-        vec!["真实结果".to_string(), "实测结果".to_string(), "实际结果".to_string()]
+        vec![
+            "真实结果".to_string(),
+            "实测结果".to_string(),
+            "实际结果".to_string(),
+        ]
     }
 
     /// 剪枝必填字段（来自 prune.require_fields），驱动 required_fields 规则（§6b）。

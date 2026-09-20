@@ -5,14 +5,26 @@ use crate::store::Store;
 
 /// 内置模板（编译进二进制，零外部依赖，§2.1）。
 const BUILTIN: &[(&str, &str)] = &[
-    ("proposal.md.tpl", include_str!("../templates/proposal.md.tpl")),
+    (
+        "proposal.md.tpl",
+        include_str!("../templates/proposal.md.tpl"),
+    ),
     ("draft.md.tpl", include_str!("../templates/draft.md.tpl")),
     ("plan.md.tpl", include_str!("../templates/plan.md.tpl")),
-    ("falsification.md.tpl", include_str!("../templates/falsification.md.tpl")),
+    (
+        "falsification.md.tpl",
+        include_str!("../templates/falsification.md.tpl"),
+    ),
     ("AGENTS.md.tpl", include_str!("../templates/AGENTS.md.tpl")),
     ("terms.md.tpl", include_str!("../templates/terms.md.tpl")),
-    ("terms.local.toml.tpl", include_str!("../templates/terms.local.toml.tpl")),
-    ("config.toml.tpl", include_str!("../templates/config.toml.tpl")),
+    (
+        "terms.local.toml.tpl",
+        include_str!("../templates/terms.local.toml.tpl"),
+    ),
+    (
+        "config.toml.tpl",
+        include_str!("../templates/config.toml.tpl"),
+    ),
 ];
 
 /// 按名取模板文本：`~/.Athena/templates/<name>` 存在则用用户的，否则用内置（§2.1 优先级）。

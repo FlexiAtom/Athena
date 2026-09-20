@@ -4,17 +4,34 @@ use std::fmt;
 pub enum Error {
     Io(std::io::Error),
     /// 路径解析越出 ~/.Athena 之外（防呆，§2.3）。
-    PathEscape { path: String },
+    PathEscape {
+        path: String,
+    },
     /// YAML frontmatter 解析失败（§9.1：报错交编辑者修，绝不自动改）。
-    Parse { path: String, message: String },
-    Toml { path: String, message: String },
+    Parse {
+        path: String,
+        message: String,
+    },
+    Toml {
+        path: String,
+        message: String,
+    },
     /// slug 未找到或在多个状态目录中重复。
-    Slug { slug: String, message: String },
+    Slug {
+        slug: String,
+        message: String,
+    },
     /// 转换非法或前置未满足。
-    Transition { message: String },
+    Transition {
+        message: String,
+    },
     /// 目标文件已存在且内容不同，需显式 --force/--no-agents 才继续（防呆，§1.1 安装语义）。
-    Conflict { message: String },
-    Git { message: String },
+    Conflict {
+        message: String,
+    },
+    Git {
+        message: String,
+    },
 }
 
 impl fmt::Display for Error {

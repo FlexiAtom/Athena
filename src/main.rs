@@ -71,7 +71,11 @@ enum Cmd {
     /// 进行中→结束(done)：pending 反证须先清算
     Complete { slug: String },
     /// 任意→结束(frozen)：毙掉需写原因
-    Freeze { slug: String, #[arg(long)] reason: String },
+    Freeze {
+        slug: String,
+        #[arg(long)]
+        reason: String,
+    },
     /// 放进 community/（请人帮忙处理）
     Community { slug: String },
     /// finished(frozen)→working（要求重新剪枝）
@@ -208,13 +212,22 @@ fn main() {
                 promote,
             } => {
                 let p = resolve(cli.project.as_deref());
-                commands::quick(&store, &p, slug, comment, *promote).map_err(anyhow::Error::from)?;
+                commands::quick(&store, &p, slug, comment, *promote)
+                    .map_err(anyhow::Error::from)?;
             }
-            Cmd::Write { path, content, stdin } => {
+            Cmd::Write {
+                path,
+                content,
+                stdin,
+            } => {
                 let c = read_content(content.clone(), *stdin)?;
                 commands::write_path(&store, path, &c).map_err(anyhow::Error::from)?;
             }
-            Cmd::Append { path, content, stdin } => {
+            Cmd::Append {
+                path,
+                content,
+                stdin,
+            } => {
                 let c = read_content(content.clone(), *stdin)?;
                 commands::append_path(&store, path, &c).map_err(anyhow::Error::from)?;
             }

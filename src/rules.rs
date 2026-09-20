@@ -118,7 +118,9 @@ impl Rule for FalsificationRecorded {
             return vec![Finding {
                 level,
                 code: "MissingFalsificationRecord",
-                message: "缺 `## 反证实验` 章节（写出来即可，或 promote --skip-falsification 登记待测）".into(),
+                message:
+                    "缺 `## 反证实验` 章节（写出来即可，或 promote --skip-falsification 登记待测）"
+                        .into(),
             }];
         }
         let section = section_slice(&ctx.doc.body, "反证实验").unwrap_or_default();
@@ -132,7 +134,8 @@ impl Rule for FalsificationRecorded {
             return vec![Finding {
                 level,
                 code: "FalsificationNoEvidence",
-                message: "`反证实验` 章节既无真实结果、也无 `### 待测`/具象跳过理由 → 仍是猜想".into(),
+                message: "`反证实验` 章节既无真实结果、也无 `### 待测`/具象跳过理由 → 仍是猜想"
+                    .into(),
             }];
         }
         if pending && ctx.located_status == "working" {
@@ -174,7 +177,9 @@ impl Rule for RequiredFields {
 /// 取某标题（规范化后匹配）到下一个同级/更高级标题之间的正文。
 fn section_slice(body: &str, heading: &str) -> Option<String> {
     let lines: Vec<&str> = body.lines().collect();
-    let start = lines.iter().position(|l| crate::document::heading_matches(l, heading))?;
+    let start = lines
+        .iter()
+        .position(|l| crate::document::heading_matches(l, heading))?;
     let start_level = crate::document::heading_level(lines[start]);
     let mut out = Vec::new();
     for l in &lines[start + 1..] {
@@ -201,11 +206,16 @@ fn table_has_result(section: &str, tokens: &[String]) -> bool {
         .filter(|t| t.starts_with('|') && !is_sep(t))
         .map(|t| t.trim_matches('|').split('|').map(|c| c.trim()).collect())
         .collect();
-    if let Some((hdr, col)) = rows.iter().enumerate().find_map(|(i, cells)| {
-        cells.iter().position(is_tok).map(|c| (i, c))
-    }) {
+    if let Some((hdr, col)) = rows
+        .iter()
+        .enumerate()
+        .find_map(|(i, cells)| cells.iter().position(is_tok).map(|c| (i, c)))
+    {
         return rows.iter().skip(hdr + 1).any(|cells| {
-            cells.get(col).map(|v| !v.is_empty() && !is_tok(v)).unwrap_or(false)
+            cells
+                .get(col)
+                .map(|v| !v.is_empty() && !is_tok(v))
+                .unwrap_or(false)
         });
     }
     false
@@ -216,7 +226,9 @@ mod tests {
     use super::*;
 
     fn toks() -> Vec<String> {
-        ["真实结果", "实测结果", "实际结果"].map(String::from).to_vec()
+        ["真实结果", "实测结果", "实际结果"]
+            .map(String::from)
+            .to_vec()
     }
 
     #[test]

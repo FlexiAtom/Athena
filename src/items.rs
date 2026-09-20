@@ -30,11 +30,7 @@ pub fn list_items(store: &Store, project: &str) -> Result<Vec<Item>> {
                 continue;
             }
             if let Ok(doc) = Document::read(&path) {
-                out.push(Item {
-                    path,
-                    status,
-                    doc,
-                });
+                out.push(Item { path, status, doc });
             }
         }
     }
@@ -48,11 +44,7 @@ pub fn find_item(store: &Store, project: &str, slug: &str) -> Result<Option<Item
         let path = store.status_dir(project, status).join(format!("{slug}.md"));
         if path.exists() {
             let doc = Document::read(&path)?;
-            hits.push(Item {
-                path,
-                status,
-                doc,
-            });
+            hits.push(Item { path, status, doc });
         }
     }
     match hits.len() {

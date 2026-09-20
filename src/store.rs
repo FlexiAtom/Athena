@@ -19,11 +19,11 @@ impl Store {
         let root = match std::env::var_os("ATHENA_HOME") {
             Some(v) if !v.is_empty() => PathBuf::from(v),
             _ => {
-                let home = std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .ok_or_else(|| Error::Transition {
+                let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
+                    Error::Transition {
                         message: "无法确定 HOME（且未设置 ATHENA_HOME）".into(),
-                    })?;
+                    }
+                })?;
                 home.join(".Athena")
             }
         };
@@ -54,7 +54,8 @@ impl Store {
             }
         }
         let joined = self.root.join(rel_path);
-        let canonical = self.canonicalize_existing_prefix(&joined)
+        let canonical = self
+            .canonicalize_existing_prefix(&joined)
             .map_err(|_| Error::PathEscape { path: rel.into() })?;
         let root_canon = self.canonicalize_existing_prefix(&self.root)?;
         if !canonical.starts_with(&root_canon) {

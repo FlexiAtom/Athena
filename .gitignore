@@ -1,1 +1,4 @@
 /target
+
+# 本地审查快照，不入库
+athena-review.tar.zst

@@ -75,11 +75,10 @@ impl Document {
             path: path.display().to_string(),
             message: "缺少 YAML frontmatter 分隔线 `---`（§9.1）".into(),
         })?;
-        let fm: Frontmatter =
-            serde_yaml::from_str(fm_str).map_err(|e| Error::Parse {
-                path: path.display().to_string(),
-                message: format!("frontmatter 解析失败: {e}"),
-            })?;
+        let fm: Frontmatter = serde_yaml::from_str(fm_str).map_err(|e| Error::Parse {
+            path: path.display().to_string(),
+            message: format!("frontmatter 解析失败: {e}"),
+        })?;
         Ok(Document { fm, body })
     }
 
@@ -106,9 +105,7 @@ impl Document {
 
     /// 判断正文是否含某标题（规范化后前缀匹配，容忍 "## 2. 反证实验" / "### 反证实验（…）"）。
     pub fn has_heading(&self, heading: &str) -> bool {
-        self.body
-            .lines()
-            .any(|l| heading_matches(l, heading))
+        self.body.lines().any(|l| heading_matches(l, heading))
     }
 }
 
@@ -146,11 +143,13 @@ pub fn heading_level(line: &str) -> usize {
 /// 拆分 `---\n <fm> \n---\n <body>`。
 fn split_frontmatter(raw: &str) -> Option<(&str, String)> {
     let rest = raw.strip_prefix("---")?;
-    let rest = rest.strip_prefix("\n").or_else(|| rest.strip_prefix("\r\n"))?;
+    let rest = rest
+        .strip_prefix("\n")
+        .or_else(|| rest.strip_prefix("\r\n"))?;
     let end = find_fm_end(rest)?;
     let (fm, body) = rest.split_at(end.0);
     // 跳过结束的 `---` 行
-    let body_after = body.splitn(2, '\n').nth(1).unwrap_or("");
+    let body_after = body.split_once('\n').map(|x| x.1).unwrap_or("");
     Some((fm.trim_end(), body_after.to_string()))
 }
 
@@ -176,7 +175,10 @@ mod tests {
 
     #[test]
     fn heading_normalizes_numbered_prefix() {
-        assert!(heading_matches("## 2. 原理实机验证（门槛）", "原理实机验证"));
+        assert!(heading_matches(
+            "## 2. 原理实机验证（门槛）",
+            "原理实机验证"
+        ));
         assert!(heading_matches("### 反证实验（必须）", "反证实验"));
         assert!(heading_matches("## 自审裁枝", "自审裁枝"));
         assert!(!heading_matches("## 目标", "原理实机验证"));

@@ -99,7 +99,10 @@ pub fn init(
     std::fs::create_dir_all(store.root.join(".locks"))?;
 
     // 写入默认协议文件（已存在不覆盖，§2.1 覆盖机制）。
-    write_if_absent(&store.config_toml(), &templates::load(store, "config.toml.tpl"))?;
+    write_if_absent(
+        &store.config_toml(),
+        &templates::load(store, "config.toml.tpl"),
+    )?;
     write_if_absent(&store.terms_md(), &templates::load(store, "terms.md.tpl"))?;
     write_if_absent(
         &store.terms_toml(),
@@ -159,7 +162,10 @@ fn render_entry(store: &Store, version: &str) -> String {
     vars.insert("version".to_string(), version.to_string());
     // 替换 frontmatter 中的版本占位（模板已含固定 version，这里兜底替换 athena-version 行）。
     let out = templates::render(&tpl, &vars);
-    out.replace("athena-version: 0.1.0", &format!("athena-version: {version}"))
+    out.replace(
+        "athena-version: 0.1.0",
+        &format!("athena-version: {version}"),
+    )
 }
 
 fn write_if_absent(path: &Path, text: &str) -> Result<()> {
@@ -184,7 +190,11 @@ pub fn new_item(store: &Store, project: &str, slug: &str, kind: &str) -> Result<
         if it.status != "finished" {
             return Err(Error::Slug {
                 slug: slug.into(),
-                message: format!("已存在于 {}（{}），项目内必须唯一", it.status, it.doc.fm.kind.as_str()),
+                message: format!(
+                    "已存在于 {}（{}），项目内必须唯一",
+                    it.status,
+                    it.doc.fm.kind.as_str()
+                ),
             });
         }
         println!("⚠ 存在同名历史项（finished），确认复用：新项仍将在 pool/ 创建。");
@@ -198,7 +208,10 @@ pub fn new_item(store: &Store, project: &str, slug: &str, kind: &str) -> Result<
     vars.insert("actor".into(), actor());
     vars.insert("now".into(), templates::now_iso());
     let rendered = templates::render(&templates::load(store, tpl_name), &vars);
-    let mut doc = Document::parse(&store.status_dir(project, "pool").join(format!("{slug}.md")), &rendered)?;
+    let mut doc = Document::parse(
+        &store.status_dir(project, "pool").join(format!("{slug}.md")),
+        &rendered,
+    )?;
     doc.fm.slug = slug.into();
     doc.fm.project = project.into();
     doc.fm.status = "pool".into();
@@ -239,7 +252,10 @@ fn check_item(
         terms,
         falsification_mode: mode,
     };
-    rules::registry().iter().flat_map(|r| r.check(&ctx)).collect()
+    rules::registry()
+        .iter()
+        .flat_map(|r| r.check(&ctx))
+        .collect()
 }
 
 pub fn validate(store: &Store, project: &str) -> Result<bool> {
@@ -329,7 +345,9 @@ pub fn promote(store: &Store, project: &str, slug: &str, skip: Option<&str>) -> 
     }
     if findings.iter().any(|f| f.level == Level::Error) {
         return Err(Error::Transition {
-            message: "反证/block 模式检出 Error，未移动。补齐证据或换 warn 模式后再 promote（§5.1e）。".into(),
+            message:
+                "反证/block 模式检出 Error，未移动。补齐证据或换 warn 模式后再 promote（§5.1e）。"
+                    .into(),
         });
     }
 
@@ -337,10 +355,7 @@ pub fn promote(store: &Store, project: &str, slug: &str, skip: Option<&str>) -> 
     let new_path = move_to_status(store, &mut doc, &it.path, project, slug, target)?;
     let mut touched = vec![srel(store, &src), srel(store, &new_path)];
     if skip.is_some() {
-        touched.push(srel(
-            store,
-            &store.project_dir(project).join("pending.md"),
-        ));
+        touched.push(srel(store, &store.project_dir(project).join("pending.md")));
     }
     Git::commit_paths(
         &store.root,
@@ -371,11 +386,13 @@ fn register_pending(
     doc.body = insert_after_section(doc.body.trim_end(), "反证实验", &block);
     // 追加到 pending.md（相对 ~/.Athena 的项目目录，§5.1f）。
     let pend = store.project_dir(project).join("pending.md");
-    let line = format!("- [ ] {slug} · 跳过反证 · 理由：{reason} · {}", templates::today());
+    let line = format!(
+        "- [ ] {slug} · 跳过反证 · 理由：{reason} · {}",
+        templates::today()
+    );
     append_to_markdown_file(&pend, &line)?;
     Ok(())
 }
-
 
 pub fn complete(store: &Store, project: &str, slug: &str) -> Result<()> {
     require_initialized(store)?;
@@ -455,7 +472,9 @@ pub fn community(store: &Store, project: &str, slug: &str) -> Result<()> {
     require_initialized(store)?;
     let it = need_item(store, project, slug)?;
     if it.status == "community" {
-        return Err(Error::Transition { message: "已在 community/".into() });
+        return Err(Error::Transition {
+            message: "已在 community/".into(),
+        });
     }
     let mut doc = it.doc.clone();
     doc.fm.falsification = None;
@@ -467,7 +486,10 @@ pub fn community(store: &Store, project: &str, slug: &str) -> Result<()> {
         &format!("community: {slug} → community"),
         &actor(),
     )?;
-    println!("✓ {slug}: {} → community（放出去请人帮忙，供人搬运，非机器同步）", it.status);
+    println!(
+        "✓ {slug}: {} → community（放出去请人帮忙，供人搬运，非机器同步）",
+        it.status
+    );
     Ok(())
 }
 
@@ -527,7 +549,11 @@ pub fn deepen(store: &Store, project: &str, slug: &str, to: &str) -> Result<()> 
         &format!("deepen: {slug} kind → {}", kind.as_str()),
         &actor(),
     )?;
-    println!("✓ {slug}: kind → {}（文件留在 {}/）", kind.as_str(), it.status);
+    println!(
+        "✓ {slug}: kind → {}（文件留在 {}/）",
+        kind.as_str(),
+        it.status
+    );
     Ok(())
 }
 
@@ -538,7 +564,8 @@ pub fn quick(store: &Store, project: &str, slug: &str, msg: &str, do_promote: bo
     let it = need_item(store, project, slug)?;
     if it.status == "pool" {
         return Err(Error::Transition {
-            message: "快速通道不得用于 pool→working（新提案从池进入必须完整剪枝，§5.4 防护1）".into(),
+            message: "快速通道不得用于 pool→working（新提案从池进入必须完整剪枝，§5.4 防护1）"
+                .into(),
         });
     }
     // 累计计数：超过 quick_limit 强制完整剪枝（防护2）。
@@ -552,11 +579,7 @@ pub fn quick(store: &Store, project: &str, slug: &str, msg: &str, do_promote: bo
         });
     }
     let mut doc = it.doc.clone();
-    let line = format!(
-        "- [{}] quick: {msg} — {}",
-        templates::now_iso(),
-        actor()
-    );
+    let line = format!("- [{}] quick: {msg} — {}", templates::now_iso(), actor());
     doc.body = append_to_section(&doc.body, "决策日志", &line);
     doc.write(&it.path)?;
     Git::commit_paths(
@@ -565,7 +588,11 @@ pub fn quick(store: &Store, project: &str, slug: &str, msg: &str, do_promote: bo
         &format!("quick: {slug}"),
         &actor(),
     )?;
-    println!("✓ quick 留痕已记入 {slug} 的 ## 决策日志（第 {} 次，上限 {}）", count + 1, terms.quick_limit);
+    println!(
+        "✓ quick 留痕已记入 {slug} 的 ## 决策日志（第 {} 次，上限 {}）",
+        count + 1,
+        terms.quick_limit
+    );
     if do_promote {
         promote(store, project, slug, None)?;
     }
@@ -583,7 +610,12 @@ pub fn write_path(store: &Store, rel: &str, content: &str) -> Result<()> {
         std::fs::create_dir_all(p)?;
     }
     std::fs::write(&path, content)?;
-    Git::commit_paths(&store.root, &[srel(store, &path)], &format!("write: {rel}"), &actor())?;
+    Git::commit_paths(
+        &store.root,
+        &[srel(store, &path)],
+        &format!("write: {rel}"),
+        &actor(),
+    )?;
     println!("✓ 写入 {rel}");
     Ok(())
 }
@@ -600,7 +632,12 @@ pub fn append_path(store: &Store, rel: &str, content: &str) -> Result<()> {
     }
     cur.push_str(content);
     std::fs::write(&path, cur)?;
-    Git::commit_paths(&store.root, &[srel(store, &path)], &format!("append: {rel}"), &actor())?;
+    Git::commit_paths(
+        &store.root,
+        &[srel(store, &path)],
+        &format!("append: {rel}"),
+        &actor(),
+    )?;
     println!("✓ 追加到 {rel}");
     Ok(())
 }
@@ -617,10 +654,21 @@ pub fn pitfall(store: &Store, project: &str, text: &str, global: bool) -> Result
     Git::commit_paths(
         &store.root,
         &[srel(store, &rel_target)],
-        &format!("pitfall({}): {}", if global { "global" } else { project }, truncate(text, 40)),
+        &format!(
+            "pitfall({}): {}",
+            if global { "global" } else { project },
+            truncate(text, 40)
+        ),
         &actor(),
     )?;
-    println!("✓ 记入 {}", if global { "全局被坑" } else { "项目级被坑" });
+    println!(
+        "✓ 记入 {}",
+        if global {
+            "全局被坑"
+        } else {
+            "项目级被坑"
+        }
+    );
     Ok(())
 }
 
@@ -672,8 +720,7 @@ pub fn term_validate(store: &Store) -> Result<()> {
 
 pub fn term_new(store: &Store, slug: &str, origin: Option<&str>) -> Result<()> {
     let toml_path = store.terms_toml();
-    let mut raw = std::fs::read_to_string(&toml_path)
-            .unwrap_or_else(|_| "# terms\n".to_string());
+    let mut raw = std::fs::read_to_string(&toml_path).unwrap_or_else(|_| "# terms\n".to_string());
     if raw.contains(&format!("[term.{slug}]")) {
         return Err(Error::Slug {
             slug: slug.into(),
@@ -683,7 +730,9 @@ pub fn term_new(store: &Store, slug: &str, origin: Option<&str>) -> Result<()> {
     if !raw.ends_with('\n') {
         raw.push('\n');
     }
-    let origin_line = origin.map(|o| format!("origin = \"{o}\"\n")).unwrap_or_default();
+    let origin_line = origin
+        .map(|o| format!("origin = \"{o}\"\n"))
+        .unwrap_or_default();
     raw.push_str(&format!(
         "\n[term.{slug}]\nslug = \"{slug}\"\n{origin_line}synonyms = []\nrequire_fields = []\ndefinition = \"\"\n"
     ));

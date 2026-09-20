@@ -60,12 +60,7 @@ impl Git {
 
     /// 只暂存**指定路径**（相对 root）并提交——精确归因，避免 `add -A` 扫入无关挂起改动。
     /// paths 为空则退化为 commit_all（兜底，如 init 的骨架批量落地）。
-    pub fn commit_paths(
-        root: &Path,
-        paths: &[PathBuf],
-        summary: &str,
-        actor: &str,
-    ) -> Result<()> {
+    pub fn commit_paths(root: &Path, paths: &[PathBuf], summary: &str, actor: &str) -> Result<()> {
         if paths.is_empty() {
             return Self::commit_all(root, summary, actor);
         }
