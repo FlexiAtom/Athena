@@ -42,6 +42,12 @@ enum Cmd {
         /// 入口文件落地目录（默认为当前目录）
         #[arg(long)]
         at: Option<PathBuf>,
+        /// 覆盖已存在的入口文件前必须显式指定（防呆，§1.1）
+        #[arg(long)]
+        force: bool,
+        /// 只初始化状态骨架，完全不触碰目标仓库的入口文件
+        #[arg(long)]
+        no_agents: bool,
     },
     /// 用提案模板在 pool/ 创建（项目内唯一）
     New {
@@ -160,9 +166,11 @@ fn main() {
                 project,
                 agents_file,
                 at,
+                force,
+                no_agents,
             } => {
                 let at = at.clone().unwrap_or_else(|| PathBuf::from("."));
-                commands::init(&store, project, agents_file, &at)
+                commands::init(&store, project, agents_file, &at, *force, *no_agents)
                     .map_err(anyhow::Error::from)?;
             }
             Cmd::New { slug, kind } => {

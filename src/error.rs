@@ -12,6 +12,8 @@ pub enum Error {
     Slug { slug: String, message: String },
     /// 转换非法或前置未满足。
     Transition { message: String },
+    /// 目标文件已存在且内容不同，需显式 --force/--no-agents 才继续（防呆，§1.1 安装语义）。
+    Conflict { message: String },
     Git { message: String },
 }
 
@@ -35,6 +37,7 @@ impl fmt::Display for Error {
             }
             Error::Slug { slug, message } => write!(f, "工作项 `{slug}`: {message}"),
             Error::Transition { message } => write!(f, "非法转换: {message}"),
+            Error::Conflict { message } => write!(f, "拒绝覆盖: {message}"),
             Error::Git { message } => write!(f, "git 错误: {message}"),
         }
     }

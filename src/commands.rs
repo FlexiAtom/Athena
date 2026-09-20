@@ -61,7 +61,36 @@ fn require_initialized(store: &Store) -> Result<()> {
 // init
 // ============================================================================
 
-pub fn init(store: &Store, project: &str, agents_file: &str, at: &Path) -> Result<()> {
+pub fn init(
+    store: &Store,
+    project: &str,
+    agents_file: &str,
+    at: &Path,
+    force: bool,
+    no_agents: bool,
+) -> Result<()> {
+    // 防呆（§1.1 安装语义）：先判入口文件，避免"半初始化 + 静默覆盖"。
+    // 已存在且内容不同 → 除非 --force 否则整体拒绝，且不产生任何状态（原子、无副作用）。
+    let rendered = render_entry(store, PROTO_VERSION);
+    let target = at.join(agents_file);
+    let existing = std::fs::read_to_string(&target).ok();
+    let write_entry = match &existing {
+        None => !no_agents,
+        Some(cur) if *cur == rendered => false, // 幂等：已是最新，不重写
+        Some(_) if no_agents => false,          // 存在且不同，但显式不动仓库
+        Some(_) if force => true,               // 显式覆盖
+        Some(_) => {
+            return Err(Error::Conflict {
+                message: format!(
+                    "`{}` 已存在且与 Athena 模板不同，拒绝覆盖。\n\
+                     = 想覆盖并初始化：加 `--force`；只建状态骨架、不碰该文件：加 `--no-agents`。\n\
+                     = 本次未创建任何状态、未改动任何文件（§1.1：接口可进仓库，但不静默改用户仓库）。",
+                    target.display()
+                ),
+            });
+        }
+    };
+
     std::fs::create_dir_all(store.root.join("pitfalls"))?;
     std::fs::create_dir_all(store.root.join("templates"))?;
     for status in STATUSES {
@@ -99,22 +128,27 @@ pub fn init(store: &Store, project: &str, agents_file: &str, at: &Path) -> Resul
     Git::init(&store.root)?;
 
     // 复制协议入口文件到项目仓库根（复制而非软链，§1.1「安装语义」）。
-    let rendered = render_entry(store, PROTO_VERSION);
-    let target = at.join(agents_file);
-    std::fs::create_dir_all(
-        target
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new(".")),
-    )?;
-    std::fs::write(&target, rendered)?;
+    // 仅在需要时写：不存在→建 / --force→覆盖 / 内容已同或 --no-agents→跳过。
+    let entry_note = if write_entry {
+        std::fs::create_dir_all(
+            target
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new(".")),
+        )?;
+        std::fs::write(&target, &rendered)?;
+        format!("协议入口文件已复制到：{}", target.display())
+    } else if no_agents {
+        "已按 --no-agents 跳过入口文件（未触碰目标仓库）".to_string()
+    } else {
+        format!("入口文件已是最新，未改动：{}", target.display())
+    };
 
     Git::commit_all(&store.root, &format!("init: 项目 {project} 骨架"), &actor())?;
     println!(
         "已初始化 ~/.Athena 与项目 `{project}`。\n\
-         协议入口文件已复制到：{}（复制非软链，可安全提交；不含任何工作状态）。\n\
-         下一步：在项目里让 AI 读本入口，再 `athena context` / `athena validate`。",
-        target.display()
+         {entry_note}（复制非软链，可安全提交；不含任何工作状态）。\n\
+         下一步：在项目里让 AI 读本入口，再 `athena context` / `athena validate`。"
     );
     Ok(())
 }

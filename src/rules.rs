@@ -189,27 +189,35 @@ fn section_slice(body: &str, heading: &str) -> Option<String> {
     Some(out.join("\n"))
 }
 
-/// Markdown 表格中是否存在某数据行的"真实结果"列（第 4 列）非空。
+/// Markdown 表格中是否存在"真实结果"被填写。
+/// 按**表头**定位结果列（同义词匹配），不假设固定列序/列数——历史文档/简表常用 3 列，
+/// 早期实现写死第 4 列导致有证据却被判"无结果"（§11 解析鲁棒性）。
 fn table_has_result(section: &str) -> bool {
-    for line in section.lines() {
-        let t = line.trim();
-        if !t.starts_with('|') {
-            continue;
-        }
-        // 跳过分隔行 |---|---|
-        if t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ')) {
-            continue;
-        }
-        let cells: Vec<&str> = t.trim_matches('|').split('|').map(|c| c.trim()).collect();
-        if cells.len() >= 4 {
-            // 排除表头行（含"假设"/"真实结果"字样）
-            let is_header = cells.iter().any(|c| *c == "假设" || *c == "真实结果");
-            if !is_header && !cells[3].is_empty() {
-                return true;
-            }
-        }
+    let is_sep = |t: &str| t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '));
+    let is_result = |c: &&str| {
+        matches!(
+            *c,
+            "真实结果" | "实际结果" | "真实输出" | "实测结果" | "结果" | "实测" | "实际"
+        )
+    };
+    let rows: Vec<Vec<&str>> = section
+        .lines()
+        .map(|l| l.trim())
+        .filter(|t| t.starts_with('|') && !is_sep(t))
+        .map(|t| t.trim_matches('|').split('|').map(|c| c.trim()).collect())
+        .collect();
+    // 优先：定位含结果字样的表头列，检查其下数据行非空。
+    if let Some((hdr, col)) = rows.iter().enumerate().find_map(|(i, cells)| {
+        cells.iter().position(is_result).map(|c| (i, c))
+    }) {
+        return rows.iter().skip(hdr + 1).any(|cells| {
+            cells.get(col).map(|v| !v.is_empty() && !is_result(v)).unwrap_or(false)
+        });
     }
-    false
+    // 退化：无结果表头时，任一非表头数据行存在非空单元格即算有内容。
+    rows.iter().any(|cells| {
+        !cells.iter().any(|c| *c == "假设") && cells.iter().any(|v| !v.is_empty())
+    })
 }
 
 #[cfg(test)]
@@ -226,6 +234,19 @@ mod tests {
     fn filled_result_detected() {
         let s = "| 假设 | 实验 | 预期 | 真实结果 |\n|---|---|---|---|\n| A | `find` | x | 42 XML 0 命中 |";
         assert!(table_has_result(s));
+    }
+
+    #[test]
+    fn three_column_result_detected() {
+        // 3 列简表，结果列在最后：早期按第 4 列判会漏（本次修复要覆盖的假阴性）。
+        let s = "| 假设 | 依据 | 真实结果 |\n|---|---|---|\n| 覆盖非本意 | git stat | 成立，275→40 行 |";
+        assert!(table_has_result(s));
+    }
+
+    #[test]
+    fn three_column_empty_not_result() {
+        let s = "| 假设 | 依据 | 真实结果 |\n|---|---|---|\n|  |  |  |";
+        assert!(!table_has_result(s));
     }
 
     #[test]
