@@ -43,6 +43,11 @@ pub fn build(store: &Store, project: &str, terms: &TermsRegistry) -> Result<Stri
         "# Truth: ~/.Athena/projects/{project} (git-tracked)\n"
     ));
 
+    // 全局通知广播板（单一信道 notices.md，一次写入全项目可见；§13.6 不预支复杂度）。
+    if let Some(section) = notices_section(store) {
+        s.push_str(&section);
+    }
+
     let items = list_items(store, project)?;
     for status in STATUSES {
         let title = match status {
@@ -140,5 +145,65 @@ fn push_file_section(s: &mut String, header: &str, path: &std::path::Path) {
             s.push_str(trimmed);
             s.push('\n');
         }
+    }
+}
+
+/// 从 `~/.Athena/notices.md` 抽取广播通知（以 `- ` 开头的行），渲染成顶部提醒段。
+/// 无内容（文件缺失或无通知行）→ None。通知是跨项目广播而非工作项，不进 list_items/validate 判定。
+pub fn notices_section(store: &Store) -> Option<String> {
+    let text = std::fs::read_to_string(store.notices_md()).ok()?;
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim_start)
+        .filter(|l| l.starts_with("- ") && l.chars().count() > 2)
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let mut s = String::from("\n## 📣 全局通知（来自 ~/.Athena/notices.md · 处理后请清理）\n");
+    for l in lines {
+        s.push_str(l);
+        s.push('\n');
+    }
+    Some(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn scratch_root(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("athena-notify-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn notices_absent_or_header_only_yields_none() {
+        let root = scratch_root("none");
+        let store = Store { root: root.clone() };
+        // 文件缺失
+        assert!(notices_section(&store).is_none());
+        // 仅有表头/注释、无通知行
+        std::fs::write(store.notices_md(), "# 全局通知\n<!-- 注释 -->\n").unwrap();
+        assert!(notices_section(&store).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn notices_renders_only_bullet_lines() {
+        let root = scratch_root("some");
+        let store = Store { root: root.clone() };
+        std::fs::write(
+            store.notices_md(),
+            "# 全局通知\n- 2026-09-21 · AGENTS.md 已更新，请同步入口副本\n\n正文不应出现\n",
+        )
+        .unwrap();
+        let section = notices_section(&store).expect("应有通知");
+        assert!(section.contains("AGENTS.md 已更新"));
+        assert!(!section.contains("正文不应出现"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -129,6 +129,14 @@ enum Cmd {
         #[arg(long)]
         global: bool,
     },
+    /// 广播一条全局通知（写入 ~/.Athena/notices.md，各项目 context/validate 顶部可见）
+    Notify {
+        /// 通知文本（与 --clear 二选一）
+        text: Option<String>,
+        /// 清空全局通知广播板
+        #[arg(long)]
+        clear: bool,
+    },
     /// 输出 AI 上下文（协议摘要 + 目录树 + 术语 + 坑）
     Context,
     /// 自检报告（解析校验 + 剪枝/反证完整性；只报告不改文件）
@@ -257,6 +265,9 @@ fn main() {
             Cmd::Pitfall { text, global } => {
                 let p = resolve(cli.project.as_deref());
                 commands::pitfall(&store, &p, text, *global).map_err(anyhow::Error::from)?;
+            }
+            Cmd::Notify { text, clear } => {
+                commands::notify(&store, text.as_deref(), *clear).map_err(anyhow::Error::from)?;
             }
             Cmd::Context => {
                 let p = resolve(cli.project.as_deref());

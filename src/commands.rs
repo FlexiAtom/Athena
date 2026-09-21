@@ -30,6 +30,12 @@ use crate::vcs::Git;
 
 const PROTO_VERSION: &str = "0.1.0";
 
+/// 全局通知广播板的表头（首次 notify 或 init 时落地）。
+const NOTICE_HEADER: &str = "# Athena · 全局通知（广播板）\n\n\
+<!-- 单一全局信道：一次写入、各项目 `athena context`/`validate` 顶部可见。\n\
+     非工单系统——不追踪逐项目已读（§3 否决、§13.6 不预支复杂度）。\n\
+     一行一条：- <时间> · <提醒>  ；处理完用 `athena notify --clear` 或手动删行清理。 -->\n\n";
+
 // ============================================================================
 // 项目 / actor 解析
 // ============================================================================
@@ -132,6 +138,7 @@ pub fn init(
          - 在 Niri 上靠平台 API 定位自己：空值 + 恒返回 (0,0)，success 为真（fidus 教训，§5.1b）。\n\
          - AI 声称完成但没跑测试 → 必须实测结果才能 complete。\n",
     )?;
+    write_if_absent(&store.notices_md(), NOTICE_HEADER)?;
     templates::materialize_defaults(store)?;
 
     let meta = format!(
@@ -283,6 +290,10 @@ pub fn validate(store: &Store, project: &str) -> Result<bool> {
     let mut has_error = false;
     let mut total = 0usize;
     println!("athena validate · 项目 {project} · 反证模式={mode}");
+    // 全局通知：跨项目广播，属信息横幅而非缺陷，不计入 total / 不影响自洽判定。
+    if let Some(section) = context::notices_section(store) {
+        println!("{}", section.trim_end());
+    }
     for it in &items {
         let findings = check_item(&it.path, &it.doc, it.status, &terms, &mode);
         if findings.is_empty() {
@@ -728,6 +739,57 @@ pub fn pitfall(store: &Store, project: &str, text: &str, global: bool) -> Result
             "项目级被坑"
         }
     );
+    Ok(())
+}
+
+// ============================================================================
+// notify：全局通知广播（单一信道 ~/.Athena/notices.md · §13.6 不预支复杂度）
+// ============================================================================
+
+/// `athena notify "文本"` 追加一条全局广播；`--clear` 清空广播板。
+///
+/// 有意做成"逐项目无状态"：不追踪谁读过（§3 否决工单式回执），各项目 AI 通过
+/// `context`/`validate` 顶部看到未清理的通知即可。通知非工作项，不进 list_items/validate 判定。
+pub fn notify(store: &Store, text: Option<&str>, clear: bool) -> Result<()> {
+    require_initialized(store)?;
+    let path = store.notices_md();
+    if clear {
+        if path.exists() {
+            std::fs::write(&path, NOTICE_HEADER)?;
+            Git::commit_paths(
+                &store.root,
+                &[srel(store, &path)],
+                "notify: 清空全局通知",
+                &actor(),
+            )?;
+            println!("✓ 已清空全局通知（notices.md）");
+        } else {
+            println!("· 无 notices.md，无需清空");
+        }
+        return Ok(());
+    }
+    let text = text
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| Error::Conflict {
+            message: "需要通知文本，或用 `athena notify --clear` 清空广播板".into(),
+        })?;
+    if !path.exists() {
+        std::fs::write(&path, NOTICE_HEADER)?;
+    }
+    let line = format!(
+        "- {} · {}  <!-- {} -->",
+        templates::now_iso(),
+        text.trim(),
+        actor()
+    );
+    append_to_markdown_file(&path, &line)?;
+    Git::commit_paths(
+        &store.root,
+        &[srel(store, &path)],
+        &format!("notify: {}", truncate(text.trim(), 40)),
+        &actor(),
+    )?;
+    println!("✓ 已广播全局通知 → 各项目 `athena context` / `athena validate` 顶部可见");
     Ok(())
 }
 

@@ -135,6 +135,10 @@ impl Store {
     pub fn config_toml(&self) -> PathBuf {
         self.root.join("config.toml")
     }
+    /// 全局通知广播板（单一真源，跨项目共享；见 `athena notify` / §13.6）。
+    pub fn notices_md(&self) -> PathBuf {
+        self.root.join("notices.md")
+    }
 }
 
 /// 若给定路径已是绝对则原样 canonicalize-lite（拼接 cwd），否则尽力规范化。
