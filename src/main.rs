@@ -111,6 +111,9 @@ enum Cmd {
         content: Option<String>,
         #[arg(long)]
         stdin: bool,
+        /// 允许写入空/纯空白内容（默认拒绝，防误清空状态文件）
+        #[arg(long)]
+        allow_empty: bool,
     },
     /// 追加（相对 ~/.Athena）
     Append {
@@ -237,9 +240,11 @@ fn main() {
                 path,
                 content,
                 stdin,
+                allow_empty,
             } => {
                 let c = read_content(content.clone(), *stdin)?;
-                commands::write_path(&store, path, &c).map_err(anyhow::Error::from)?;
+                commands::write_path(&store, path, &c, *allow_empty)
+                    .map_err(anyhow::Error::from)?;
             }
             Cmd::Append {
                 path,

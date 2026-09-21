@@ -634,8 +634,17 @@ pub fn quick(store: &Store, project: &str, slug: &str, msg: &str, do_promote: bo
 // write / append / pitfall
 // ============================================================================
 
-pub fn write_path(store: &Store, rel: &str, content: &str) -> Result<()> {
+pub fn write_path(store: &Store, rel: &str, content: &str, allow_empty: bool) -> Result<()> {
     require_initialized(store)?;
+    // 防呆：空/纯空白内容默认拒绝，避免误清空状态文件（§1.2 审计层之外的一道数据保护）；
+    // 确要写空文件用 --allow-empty 显式放行。与 init --force 同类的"拒绝覆盖需显式"约定。
+    if !allow_empty && content.trim().is_empty() {
+        return Err(Error::Conflict {
+            message: format!(
+                "拒绝用空内容写入 {rel}（会清空既有内容）。确需清空请加 --allow-empty（§1.2）"
+            ),
+        });
+    }
     let path = store.resolve_rel(rel)?;
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p)?;
