@@ -741,6 +741,61 @@ pub fn show_log(store: &Store, n: usize) -> Result<()> {
     Ok(())
 }
 
+/// 故障处置手册（给 AI 的逃生说明）。`athena onerror` 打印。
+///
+/// 源码路径不烤进二进制：优先 `ATHENA_SOURCE` 环境变量，其次 config 的 `source_repo`，
+/// 都没有则提示如何配置——换机/换宿主时各自指路，避免失效。
+pub fn onerror(store: &Store) -> Result<()> {
+    let source = std::env::var_os("ATHENA_SOURCE")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| {
+            Config::load(store)
+                .ok()
+                .and_then(|c| c.source_repo)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+        });
+    let source_line = match &source {
+        Some(p) => format!("{}", p.display()),
+        None => "（未配置）设置环境变量 ATHENA_SOURCE，或在 ~/.Athena/config.toml 写 source_repo = \"…\""
+            .to_string(),
+    };
+    let report_dir = std::env::temp_dir();
+
+    println!(
+        "Athena 故障处置手册（给 AI）\n\
+         ────────────────────────────\n\
+         前提：你对状态根 {root} 有读写权（§前言）。故障时可自行处置，不必等我。\n\
+         \n\
+         1) 先诊断，别乱改：\n\
+         \x20  athena validate   # 看是否有 [Unparseable] / 结构问题\n\
+         \x20  athena context    # 核对协议摘要、目录树、术语、坑\n\
+         \x20  athena log        # 回看最近动作，定位哪一步出的问题\n\
+         \n\
+         2) 分清问题在「数据」还是「代码」：\n\
+         \x20  · 数据（某文档坏）：直接修 {root} 下那个 .md（补 frontmatter / 修 YAML），\n\
+         \x20    或删掉重建（athena new）。git 是审计层，可回看与回溯。\n\
+         \x20  · 代码（CLI 自身 panic/逻辑错）：只读审阅源码仓库：\n\
+         \x20      {source}\n\
+         \x20    看清根因，不要手改正在使用的二进制。\n\
+         \n\
+         3) 临时产物一律放 {tmp}/（别落状态根、别落源码仓）：\n\
+         \x20  错误报告 / 复现脚本 / 临时导出…… 例：{tmp}/athena-error-<日期>.md\n\
+         \n\
+         4) 立场（§1.3）：Athena 不阻止，只记录与提示。\n\
+         \x20  若流程要靠「拦住 AI」才能维持，那是协议文本没写好——改协议，别加固 CLI。\n\
+         \n\
+         5) 修好后：把根因写进避坑，防复犯：\n\
+         \x20  athena pitfall \"<症状 + 根因 + 规避>\" [--global]",
+        root = store.root.display(),
+        source = source_line,
+        tmp = report_dir.display(),
+    );
+    Ok(())
+}
+
 pub fn term_list(store: &Store) -> Result<()> {
     let terms = TermsRegistry::load(&store.terms_toml())?;
     println!("术语（quick_limit={}）", terms.quick_limit);

@@ -4,6 +4,10 @@
 # 当前默认项目；命令未指定 --project 时使用。留空则需在项目根或命令行显式指定。
 default_project = ""
 
+# Athena 源码仓库在本机的位置，供 `athena onerror` 打印（不烤进二进制，换机各自配）。
+# 也可用环境变量 ATHENA_SOURCE 覆盖。留空则 onerror 会提示如何设置。
+source_repo = ""
+
 [behavior]
 # 反证缺失时的模式：warn（标红不阻塞）| block（拒绝 promote）。项目级可覆盖 terms.local.toml。
 falsification_mode = "warn"

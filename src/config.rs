@@ -31,6 +31,9 @@ pub struct Behavior {
 pub struct Config {
     #[serde(default)]
     pub default_project: Option<String>,
+    /// Athena 源码仓库在本机的位置，供 `athena onerror` 打印（不烤进二进制：换机/换宿主各自配）。
+    #[serde(default)]
+    pub source_repo: Option<String>,
     #[serde(default)]
     pub behavior: Behavior,
 }

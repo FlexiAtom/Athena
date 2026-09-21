@@ -37,7 +37,12 @@ athena context               输出 AI 上下文（协议摘要+树+术语+坑�
 athena validate              自检报告（标红问题，不替你决定）
 athena term list|new|show    术语接口
 athena log                   git 历史
+athena onerror               AI 故障处置：源码位置 + /tmp 报告 + 处置原则
 ```
+
+## 出故障时（CLI 自身报错 / 数据损坏）
+跑 `athena onerror` 打印处置手册。要点：你对 `~/.Athena` 有读写权，可自行修坏文档；
+代码问题只读审阅源码仓（勿改运行中的二进制）；临时报告放 `/tmp/`；修好后 `athena pitfall` 记根因。
 
 ## 禁忌（违反 → validate 标红提示，不拦截）
 1. 不进池就开始写代码

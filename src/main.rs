@@ -135,6 +135,8 @@ enum Cmd {
         #[arg(short = 'n', default_value = "20")]
         count: usize,
     },
+    /// AI 故障处置手册（源码位置 + /tmp 报告 + 处置原则）
+    Onerror,
     /// 术语接口
     Term {
         #[command(subcommand)]
@@ -265,6 +267,9 @@ fn main() {
             }
             Cmd::Log { count } => {
                 commands::show_log(&store, *count).map_err(anyhow::Error::from)?;
+            }
+            Cmd::Onerror => {
+                commands::onerror(&store).map_err(anyhow::Error::from)?;
             }
             Cmd::Term { sub } => match sub {
                 TermCmd::List => commands::term_list(&store).map_err(anyhow::Error::from)?,
