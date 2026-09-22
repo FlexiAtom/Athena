@@ -104,7 +104,7 @@ enum Cmd {
         #[arg(long)]
         promote: bool,
     },
-    /// 写入（相对 ~/.Athena）
+    /// 写入（相对 ~/.Athena；裸状态目录路径 pool|working|finished|community 依 --project 归位到 projects/<project>/…，归位后按 item doc 校验）
     Write {
         path: String,
         #[arg(short, long)]
@@ -115,7 +115,7 @@ enum Cmd {
         #[arg(long)]
         allow_empty: bool,
     },
-    /// 追加（相对 ~/.Athena）
+    /// 追加（相对 ~/.Athena；裸状态目录路径 pool|working|finished|community 依 --project 归位到 projects/<project>/…，归位后按 item doc 校验）
     Append {
         path: String,
         #[arg(short, long)]
