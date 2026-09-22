@@ -170,7 +170,24 @@ pub fn init(
         format!("入口文件已是最新，未改动：{}", target.display())
     };
 
-    Git::commit_all(&store.root, &format!("init: 项目 {project} 骨架"), &actor())?;
+    // 只提交 init 真正落地的路径，绝不 `add -A` 扫全树：否则会卷进并发会话
+    // 或上一轮遗留在**其它项目**目录里的脏改动（事故：`init pixel-raider`
+    // 把 athena/pool/ 里一个无 frontmatter 的残片提交到 pixel-raider 名下）。
+    let touched: Vec<PathBuf> = vec![
+        srel(store, &store.config_toml()),
+        srel(store, &store.terms_md()),
+        srel(store, &store.terms_toml()),
+        srel(store, &store.global_pitfalls()),
+        srel(store, &store.notices_md()),
+        srel(store, &store.templates_dir()),
+        srel(store, &store.project_dir(project)),
+    ];
+    Git::commit_paths(
+        &store.root,
+        &touched,
+        &format!("init: 项目 {project} 骨架"),
+        &actor(),
+    )?;
     println!(
         "已初始化 ~/.Athena 与项目 `{project}`。\n\
          {entry_note}（复制非软链，可安全提交；不含任何工作状态）。\n\
@@ -1074,3 +1091,55 @@ pub fn project_name(store: &Store, flag: Option<&str>) -> Result<String> {
 // 让 Frontmatter 构造在需要时可复用（当前由模板渲染路径使用）。
 #[allow(dead_code)]
 fn _frontmatter_type_marker(_: Frontmatter) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归：init 必须只提交自己落地的路径，绝不 `add -A` 卷进**其它项目**的脏改动。
+    /// 事故出处：`init pixel-raider` 把遗留在 athena/pool/ 的无 frontmatter 残片
+    /// 一并提交到 pixel-raider 名下（非路径隔离的 commit_all 副作用）。
+    #[test]
+    fn init_does_not_sweep_foreign_project_dirt() {
+        let tag = std::process::id();
+        let root = std::env::temp_dir().join(format!("athena-init-iso-{tag}"));
+        let at = std::env::temp_dir().join(format!("athena-init-iso-at-{tag}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(&at).unwrap();
+        let store = Store { root: root.clone() };
+
+        init(&store, "alpha", "AGENTS.md", &at, false, false).unwrap();
+        // 模拟游离残片：init alpha 之后，在 alpha 池里写一个未跟踪、坏 frontmatter 的文件。
+        let stray = root.join("projects/alpha/pool/stray-orphan.md");
+        std::fs::write(&stray, "填入某提案真实证据\n").unwrap();
+
+        // 初始化另一个项目——旧逻辑会把 alpha 的残片卷进 beta 的 init 提交。
+        init(&store, "beta", "AGENTS.md", &at, false, false).unwrap();
+
+        let out = std::process::Command::new("git")
+            .args(["-C"])
+            .arg(&root)
+            .args(["show", "--name-only", "--pretty=format:", "HEAD"])
+            .output()
+            .expect("git show");
+        let files = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(
+            files.contains("projects/beta"),
+            "beta 的 init 提交应包含自身骨架，实际：\n{files}"
+        );
+        assert!(
+            !files.contains("projects/alpha"),
+            "beta 的 init 提交不应卷走 alpha 的文件，实际：\n{files}"
+        );
+        assert!(
+            !files.contains("stray-orphan"),
+            "beta 的 init 提交不应卷走游离残片，实际：\n{files}"
+        );
+        // 残片应原样留在磁盘、仍未被跟踪（init 无权也不该动别的项目）。
+        assert!(stray.exists(), "游离残片不应被 init 删除");
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+    }
+}
