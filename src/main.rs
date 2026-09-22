@@ -251,7 +251,8 @@ fn main() {
                 allow_empty,
             } => {
                 let c = read_content(content.clone(), *stdin)?;
-                commands::write_path(&store, path, &c, *allow_empty)
+                let p = resolve(cli.project.as_deref());
+                commands::write_path(&store, &p, path, &c, *allow_empty)
                     .map_err(anyhow::Error::from)?;
             }
             Cmd::Append {
@@ -260,7 +261,8 @@ fn main() {
                 stdin,
             } => {
                 let c = read_content(content.clone(), *stdin)?;
-                commands::append_path(&store, path, &c).map_err(anyhow::Error::from)?;
+                let p = resolve(cli.project.as_deref());
+                commands::append_path(&store, &p, path, &c).map_err(anyhow::Error::from)?;
             }
             Cmd::Pitfall { text, global } => {
                 let p = resolve(cli.project.as_deref());

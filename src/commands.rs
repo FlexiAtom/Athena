@@ -662,8 +662,20 @@ pub fn quick(store: &Store, project: &str, slug: &str, msg: &str, do_promote: bo
 // write / append / pitfall
 // ============================================================================
 
-pub fn write_path(store: &Store, rel: &str, content: &str, allow_empty: bool) -> Result<()> {
+pub fn write_path(
+    store: &Store,
+    project: &str,
+    rel: &str,
+    content: &str,
+    allow_empty: bool,
+) -> Result<()> {
     require_initialized(store)?;
+    // 裸状态目录路径（pool/… 等）依 --project 归位到 projects/<project>/…，
+    // 防误写入状态根顶层产生幻影树；显式全路径（projects/…）保持原行为。
+    let (rel, rerouted) = route_state_rel(rel, project);
+    if rerouted {
+        println!("· 相对状态目录路径已归位 → {rel}（依项目 {project}；欲写顶层请改用显式路径）");
+    }
     // 防呆：空/纯空白内容默认拒绝，避免误清空状态文件（§1.2 审计层之外的一道数据保护）；
     // 确要写空文件用 --allow-empty 显式放行。与 init --force 同类的"拒绝覆盖需显式"约定。
     if !allow_empty && content.trim().is_empty() {
@@ -673,13 +685,13 @@ pub fn write_path(store: &Store, rel: &str, content: &str, allow_empty: bool) ->
             ),
         });
     }
-    let path = store.resolve_rel(rel)?;
+    let path = store.resolve_rel(&rel)?;
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p)?;
     }
     // 工作项文档：落盘前校验并归一化（拒绝静默吞下坏 frontmatter）；
     // 其它路径（pitfalls.md / terms / scratch 等）仍是原始状态文件网关（§1.1）。
-    let final_content = if is_item_doc_rel(rel) {
+    let final_content = if is_item_doc_rel(&rel) {
         let mut doc = Document::parse(&path, content)?;
         doc.fm.updated_by = actor();
         doc.fm.updated_at = templates::now_iso();
@@ -698,9 +710,13 @@ pub fn write_path(store: &Store, rel: &str, content: &str, allow_empty: bool) ->
     Ok(())
 }
 
-pub fn append_path(store: &Store, rel: &str, content: &str) -> Result<()> {
+pub fn append_path(store: &Store, project: &str, rel: &str, content: &str) -> Result<()> {
     require_initialized(store)?;
-    let path = store.resolve_rel(rel)?;
+    let (rel, rerouted) = route_state_rel(rel, project);
+    if rerouted {
+        println!("· 相对状态目录路径已归位 → {rel}（依项目 {project}；欲写顶层请改用显式路径）");
+    }
+    let path = store.resolve_rel(&rel)?;
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p)?;
     }
@@ -710,7 +726,7 @@ pub fn append_path(store: &Store, rel: &str, content: &str) -> Result<()> {
     }
     cur.push_str(content);
     // 工作项文档：追加进正文后重算 hash 与 updated-*（避免 content-hash 悬空）；坏 frontmatter 拒绝。
-    let final_content = if is_item_doc_rel(rel) {
+    let final_content = if is_item_doc_rel(&rel) {
         let mut doc = Document::parse(&path, &cur)?;
         doc.fm.updated_by = actor();
         doc.fm.updated_at = templates::now_iso();
@@ -961,6 +977,20 @@ fn srel(store: &Store, p: &Path) -> PathBuf {
     p.strip_prefix(&store.root).unwrap_or(p).to_path_buf()
 }
 
+/// 把裸状态目录相对路径（pool/working/finished/community 开头）依当前项目归位到
+/// `projects/<project>/…`，杜绝误写入状态根顶层（write-ignores-project 缺陷）。
+/// 已限定路径（projects/…、templates/…、pitfalls/… 等）原样返回。
+/// 返回 (归位后路径, 是否发生归位)。
+fn route_state_rel(rel: &str, project: &str) -> (String, bool) {
+    let trimmed = rel.trim_start_matches("./");
+    let first = trimmed.split(['/', '\\']).next().unwrap_or("");
+    if STATUSES.contains(&first) {
+        (format!("projects/{project}/{trimmed}"), true)
+    } else {
+        (rel.to_string(), false)
+    }
+}
+
 /// 把工作项移动到目标状态目录：更新 frontmatter，写新文件，删旧文件。返回新文件路径。
 fn move_to_status(
     store: &Store,
@@ -1138,6 +1168,70 @@ mod tests {
         );
         // 残片应原样留在磁盘、仍未被跟踪（init 无权也不该动别的项目）。
         assert!(stray.exists(), "游离残片不应被 init 删除");
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    #[test]
+    fn route_state_rel_prefixes_bare_status_dirs_under_project() {
+        for st in STATUSES {
+            let (r, changed) = route_state_rel(&format!("{st}/x.md"), "demo");
+            assert!(changed, "{st}/ 裸路径应触发归位");
+            assert_eq!(r, format!("projects/demo/{st}/x.md"));
+        }
+        // ./ 前缀也归位。
+        let (r, changed) = route_state_rel("./pool/x.md", "demo");
+        assert!(changed);
+        assert_eq!(r, "projects/demo/pool/x.md");
+    }
+
+    #[test]
+    fn route_state_rel_leaves_qualified_and_nonstatus_paths() {
+        // 已限定全路径、其它根目录：原样、不改位（向后兼容）。
+        for rel in [
+            "projects/demo/pool/x.md",
+            "templates/AGENTS.md.tpl",
+            "pitfalls/global.md",
+            "notices.md",
+            "projects/demo/pending.md",
+        ] {
+            let (r, changed) = route_state_rel(rel, "demo");
+            assert!(!changed, "{rel} 不应被归位");
+            assert_eq!(r, rel);
+        }
+    }
+
+    #[test]
+    fn write_path_reroutes_bare_status_path_into_project_and_validates_fm() {
+        let tag = std::process::id();
+        let root = std::env::temp_dir().join(format!("athena-wip-{tag}"));
+        let at = std::env::temp_dir().join(format!("athena-wip-at-{tag}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(&at).unwrap();
+        let store = Store { root: root.clone() };
+        init(&store, "demo", "AGENTS.md", &at, false, false).unwrap();
+
+        // 裸 pool/ 路径 + 缺 frontmatter → 归位后按 item doc 校验拒绝，绝不落顶层。
+        let bad = write_path(&store, "demo", "pool/bad.md", "no frontmatter\n", false);
+        assert!(bad.is_err(), "归位后应触发一致 frontmatter 校验");
+        assert!(
+            !root.join("pool/bad.md").exists(),
+            "顶层 pool/ 不应被污染（幻影树来源）"
+        );
+
+        // 裸 pool/ 路径 + 合法 frontmatter → 落到 projects/demo/pool/。
+        let good = format!(
+            "---\nslug: ok\nkind: proposal\nstatus: pool\nproject: demo\n\
+             updated-by: pid-0\nupdated-at: 2026-09-22T00:00:00+08:00\ncontent-hash: sha256:{:064x}\n---\n\n# ok\n",
+            0u64
+        );
+        write_path(&store, "demo", "pool/ok.md", &good, false).unwrap();
+        assert!(
+            root.join("projects/demo/pool/ok.md").exists(),
+            "归位后应写入 projects/demo/pool/ok.md"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&at);
