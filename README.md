@@ -2,6 +2,15 @@
 
 > 面向 AI Agent 的**工作协议 CLI** —— 以提示词工程为原理、由 AI 驱动的状态机。
 > A prompt-engineering-based, AI-driven working-protocol state machine.
+>
+> 写代码要 TDD，需要一整套测试纪律。
+> 改架构要留决策，需要一整套 ADR 规范。
+> 多窗口工作，AI 总忘记上下文，需要一整套上下文管理纪律。
+> AI 不遵守指令，需要一整套协议纪律。
+> AI 喜欢自己发挥，需要一整套规范约束。
+> AI 喜欢走捷径，需要一整套监督机制。
+>
+> 那 AI 驱动的状态推进，要反证、要剪枝、要留痕——凭什么没有对应的协议？
 
 ![license](https://img.shields.io/badge/license-AGPL--3.0-blue)
 
