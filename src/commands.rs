@@ -41,21 +41,37 @@ const NOTICE_HEADER: &str = "# Athena · 全局通知（广播板）\n\n\
 // ============================================================================
 
 fn resolve_project(store: &Store, flag: Option<&str>) -> Result<String> {
-    if let Some(p) = flag {
-        return Ok(p.to_string());
+    let name = if let Some(p) = flag {
+        p.to_string()
+    } else {
+        let cfg = Config::load(store)?;
+        match cfg.default_project.filter(|s| !s.is_empty()) {
+            Some(dp) => dp,
+            // 回退到当前目录名（常见：在项目仓库里执行）。
+            None => {
+                let cwd = std::env::current_dir()?;
+                cwd.file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| Error::Transition {
+                        message: "无法确定项目：请用 --project 指定，或先 `athena init`".into(),
+                    })?
+            }
+        }
+    };
+    // 解析出的项目必须已存在（项目目录只由 `athena init` 创建）。否则从 `~` 等
+    // 非项目根运行时会把 cwd 名当项目，静默造出"幽灵项目"：context 显示全空却标
+    // (git-tracked)（假阴性），new 会凭空建 projects/<假名>/ 污染状态树。显式 --project
+    // 指向不存在项目同样拦下（多半是拼写错或漏 init）。
+    if !store.project_dir(&name).is_dir() {
+        return Err(Error::Transition {
+            message: format!(
+                "项目 `{name}` 不存在（缺 ~/.Athena/projects/{name}）。\n\
+                 多半是在非项目目录运行：请在项目仓库根执行、或用 --project 指定；新项目先 `athena init {name}`。"
+            ),
+        });
     }
-    let cfg = Config::load(store)?;
-    if let Some(dp) = cfg.default_project.filter(|s| !s.is_empty()) {
-        return Ok(dp);
-    }
-    // 回退到当前目录名（常见：在项目仓库里执行）。
-    let cwd = std::env::current_dir()?;
-    cwd.file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| Error::Transition {
-            message: "无法确定项目：请用 --project 指定，或先 `athena init`".into(),
-        })
+    Ok(name)
 }
 
 fn actor() -> String {
@@ -1331,6 +1347,31 @@ mod tests {
         // 纯读命令不应在状态根顶层制造幻影目录
         assert!(!root.join("pool").exists());
         assert!(!root.join("working").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    #[test]
+    fn resolve_project_rejects_ghost_project() {
+        let tag = std::process::id();
+        let root = std::env::temp_dir().join(format!("athena-rp-{tag}"));
+        let at = std::env::temp_dir().join(format!("athena-rp-at-{tag}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(&at).unwrap();
+        let store = Store { root: root.clone() };
+
+        // 未创建任何项目时，指向不存在项目的解析必须报错——否则从 ~ 运行会把
+        // cwd 名/错拼当项目，静默造出幽灵项目（context 假空 + new 幻影树）。
+        assert!(
+            resolve_project(&store, Some("ghostproj")).is_err(),
+            "不存在的项目必须被拒，不能静默放行"
+        );
+
+        // init 真实项目后，同名解析应成功。
+        init(&store, "demo", "AGENTS.md", &at, false, false).unwrap();
+        assert_eq!(resolve_project(&store, Some("demo")).unwrap(), "demo");
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&at);
