@@ -123,11 +123,14 @@ enum Cmd {
         #[arg(long)]
         stdin: bool,
     },
-    /// 记一条坑
+    /// 记一条坑（或加 --search 只读跨源搜索坑）
     Pitfall {
-        text: String,
+        text: Option<String>,
         #[arg(long)]
         global: bool,
+        /// 只读搜索：跨全局 + 所有项目的 pitfalls.md 匹配词条（大小写不敏感、多词 AND），不记录、不改状态
+        #[arg(long)]
+        search: Option<String>,
     },
     /// 广播一条全局通知（写入 ~/.Athena/notices.md，各项目 context/validate 顶部可见）
     Notify {
@@ -264,9 +267,20 @@ fn main() {
                 let p = resolve(cli.project.as_deref());
                 commands::append_path(&store, &p, path, &c).map_err(anyhow::Error::from)?;
             }
-            Cmd::Pitfall { text, global } => {
+            Cmd::Pitfall {
+                text,
+                global,
+                search,
+            } => {
                 let p = resolve(cli.project.as_deref());
-                commands::pitfall(&store, &p, text, *global).map_err(anyhow::Error::from)?;
+                if let Some(q) = search {
+                    commands::pitfall_search(&store, &p, q).map_err(anyhow::Error::from)?;
+                } else {
+                    let text = text.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!("pitfall 需要一个 <文本>，或改用 --search \"<词条>\"")
+                    })?;
+                    commands::pitfall(&store, &p, text, *global).map_err(anyhow::Error::from)?;
+                }
             }
             Cmd::Notify { text, clear } => {
                 commands::notify(&store, text.as_deref(), *clear).map_err(anyhow::Error::from)?;

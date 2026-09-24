@@ -775,6 +775,68 @@ pub fn pitfall(store: &Store, project: &str, text: &str, global: bool) -> Result
     Ok(())
 }
 
+/// 只读跨源搜索坑：扫 `pitfalls/global.md` + 每个项目的 `pitfalls.md`，返回匹配词条的行。
+/// 大小写不敏感子串；多个词（按空白切分）取 AND。顺序：全局 → 当前项目 → 其余项目（字典序）。
+/// 纯读、不写、不 commit、不改状态（与不设防一致，pitfall-search 提案）。
+pub fn pitfall_search(store: &Store, project: &str, query: &str) -> Result<()> {
+    require_initialized(store)?;
+    let tokens: Vec<String> = query.split_whitespace().map(|t| t.to_lowercase()).collect();
+    if tokens.is_empty() {
+        println!("· 搜索词条为空，未匹配任何坑。");
+        return Ok(());
+    }
+
+    // (来源标签, 路径)：先去重收集，其余项目字典序，全局与当前项目置顶。
+    let mut sources: Vec<(String, PathBuf)> = vec![("global".into(), store.global_pitfalls())];
+    let cur = (project.to_string(), store.project_pitfalls(project));
+    let mut others: Vec<(String, PathBuf)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(store.projects_dir()) {
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == project {
+                continue;
+            }
+            others.push((name, entry.path().join("pitfalls.md")));
+        }
+    }
+    others.sort();
+    sources.push(cur);
+    sources.extend(others);
+
+    let mut total = 0usize;
+    for (label, path) in &sources {
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue; // 该项目/全局尚无 pitfalls.md，跳过
+        };
+        let mut shown_header = false;
+        for (i, line) in content.lines().enumerate() {
+            let low = line.to_lowercase();
+            if tokens.iter().all(|t| low.contains(t)) {
+                if !shown_header {
+                    println!("── {label}");
+                    shown_header = true;
+                }
+                let body = strip_pitfall_tail_comment(line.trim_start_matches("- "));
+                println!("  L{}: {}", i + 1, body);
+                total += 1;
+            }
+        }
+    }
+    println!(
+        "\n共 {total} 条命中（跨 {} 个来源；只读，未改动任何文件）。",
+        sources.len()
+    );
+    Ok(())
+}
+
+/// 剥掉坑行尾部的 `<!-- 日期 · actor -->` 注释，只留可读正文。
+fn strip_pitfall_tail_comment(line: &str) -> &str {
+    match line.find("<!--") {
+        Some(idx) => line[..idx].trim_end(),
+        None => line.trim_end(),
+    }
+}
+
 // ============================================================================
 // notify：全局通知广播（单一信道 ~/.Athena/notices.md · §13.6 不预支复杂度）
 // ============================================================================
@@ -1232,6 +1294,44 @@ mod tests {
             root.join("projects/demo/pool/ok.md").exists(),
             "归位后应写入 projects/demo/pool/ok.md"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    #[test]
+    fn strip_pitfall_tail_comment_removes_metadata() {
+        assert_eq!(
+            strip_pitfall_tail_comment("记个坑  <!-- 2026-09-24 · pid-1 -->"),
+            "记个坑"
+        );
+        assert_eq!(strip_pitfall_tail_comment("无注释行"), "无注释行");
+    }
+
+    #[test]
+    fn pitfall_search_matches_across_sources_readonly() {
+        let tag = std::process::id();
+        let root = std::env::temp_dir().join(format!("athena-psearch-{tag}"));
+        let at = std::env::temp_dir().join(format!("athena-psearch-at-{tag}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(&at).unwrap();
+        let store = Store { root: root.clone() };
+        init(&store, "demo", "AGENTS.md", &at, false, false).unwrap();
+        init(&store, "other", "AGENTS.md", &at, false, false).unwrap();
+
+        pitfall(&store, "demo", "push 会要密码，先不 push", true).unwrap(); // 全局
+        pitfall(&store, "demo", "push 前须 rebase", false).unwrap(); // demo 项目
+        pitfall(&store, "other", "与 push 无关的坑", false).unwrap(); // other 项目
+
+        // 多词 AND：命中含 push 的三条
+        pitfall_search(&store, "demo", "push").unwrap();
+        // 空词条：短路返回 Ok，不落任何文件
+        pitfall_search(&store, "demo", "   ").unwrap();
+
+        // 纯读命令不应在状态根顶层制造幻影目录
+        assert!(!root.join("pool").exists());
+        assert!(!root.join("working").exists());
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&at);
