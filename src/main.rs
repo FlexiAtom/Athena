@@ -274,6 +274,9 @@ fn main() {
             } => {
                 let p = resolve(cli.project.as_deref());
                 if let Some(q) = search {
+                    if text.is_some() {
+                        eprintln!("· 已同时给出 <文本> 与 --search：仅执行只读搜索，<文本> 被忽略、不记录。");
+                    }
                     commands::pitfall_search(&store, &p, q).map_err(anyhow::Error::from)?;
                 } else {
                     let text = text.as_deref().ok_or_else(|| {

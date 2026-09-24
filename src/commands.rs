@@ -804,10 +804,12 @@ pub fn pitfall_search(store: &Store, project: &str, query: &str) -> Result<()> {
     sources.extend(others);
 
     let mut total = 0usize;
+    let mut scanned = 0usize; // 实际含 pitfalls.md 且读成功的来源数
     for (label, path) in &sources {
         let Ok(content) = std::fs::read_to_string(path) else {
-            continue; // 该项目/全局尚无 pitfalls.md，跳过
+            continue; // 该项目/全局尚无 pitfalls.md，跳过（不计入已扫来源）
         };
+        scanned += 1;
         let mut shown_header = false;
         for (i, line) in content.lines().enumerate() {
             let low = line.to_lowercase();
@@ -822,10 +824,7 @@ pub fn pitfall_search(store: &Store, project: &str, query: &str) -> Result<()> {
             }
         }
     }
-    println!(
-        "\n共 {total} 条命中（跨 {} 个来源；只读，未改动任何文件）。",
-        sources.len()
-    );
+    println!("\n共 {total} 条命中（已扫 {scanned} 个含坑文件的来源；只读，未改动任何文件）。",);
     Ok(())
 }
 
