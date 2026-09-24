@@ -2,3 +2,6 @@
 
 # 本地审查快照，不入库
 athena-review.tar.zst
+
+# CLI 本机局部设置（权限 allow 规则等），不随仓库共享
+.qoder/
