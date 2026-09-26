@@ -101,6 +101,18 @@ pub fn build(store: &Store, project: &str, terms: &TermsRegistry) -> Result<Stri
         }
     }
 
+    // 人话台账先于被坑：指令来源的优先级高于经验教训（voice 只存人的原话逐字）。
+    push_file_section(
+        &mut s,
+        "## 人话台账 · 项目级（projects 下 voice.md · 只记人原话，AI 转述不算）",
+        &store.project_voice(project),
+    );
+    push_file_section(
+        &mut s,
+        "## 人话台账 · 全局（~/.Athena/voice.md）",
+        &store.global_voice(),
+    );
+
     // 两级被坑。
     push_file_section(&mut s, "## 项目级被坑", &store.project_pitfalls(project));
     push_file_section(&mut s, "## 全局被坑", &store.global_pitfalls());
@@ -204,6 +216,29 @@ mod tests {
         let section = notices_section(&store).expect("应有通知");
         assert!(section.contains("AGENTS.md 已更新"));
         assert!(!section.contains("正文不应出现"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn context_carries_voice_ledger_ahead_of_pitfalls() {
+        let root = scratch_root("ctx-voice");
+        let store = Store { root: root.clone() };
+        std::fs::create_dir_all(store.project_dir("demo")).unwrap();
+        std::fs::write(store.global_voice(), "- 2026-09-26 [约定] 「永不push」\n").unwrap();
+        std::fs::write(
+            store.project_voice("demo"),
+            "- 2026-09-26 [授权] 「commit 权限给了」\n",
+        )
+        .unwrap();
+        std::fs::write(store.project_pitfalls("demo"), "- 一条坑\n").unwrap();
+        let terms = TermsRegistry::load(&store.terms_toml()).unwrap();
+        let out = build(&store, "demo", &terms).unwrap();
+
+        let voice = out
+            .find("人话台账 · 项目级")
+            .expect("context 须内置输出人话台账");
+        assert!(out.contains("commit 权限给了") && out.contains("永不push"));
+        assert!(voice < out.find("项目级被坑").expect("应有被坑段"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

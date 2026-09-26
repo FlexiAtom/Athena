@@ -132,6 +132,13 @@ impl Store {
     pub fn project_pitfalls(&self, project: &str) -> PathBuf {
         self.project_dir(project).join("pitfalls.md")
     }
+    /// 人话台账：只存人的原话逐字，指令来源的最高优先级证据（见 §2.4）。
+    pub fn project_voice(&self, project: &str) -> PathBuf {
+        self.project_dir(project).join("voice.md")
+    }
+    pub fn global_voice(&self) -> PathBuf {
+        self.root.join("voice.md")
+    }
     pub fn config_toml(&self) -> PathBuf {
         self.root.join("config.toml")
     }
