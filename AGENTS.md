@@ -29,7 +29,8 @@ athena deepen <slug> --to    轴一：draft|plan（改 kind，文件不动）
 athena promote <slug>        轴二：推进一格（不带 from/to，状态由目录决定）
 athena quick <slug> -c "…"   小修复/配置更改：一行留痕，不走完整剪枝
 athena complete <slug>       进行中→结束(done)；pending 反证须先清算
-athena freeze <slug> -c "…"(→结束 frozen，毙掉需原因)
+athena freeze <slug> --reason "…"   任意→结束(frozen)，毙掉须写原因（此命令无 -c 短选项）
+athena resume <slug>         finished(frozen)→进行中（要求重新剪枝）
 athena community <slug>      放进 community/ 请人帮忙
 athena write|append <path>   相对 ~/.Athena 的安全读写（裸状态目录路径 pool/working/… 依 --project 归位到 projects/<p>/…；写顶层请用显式全路径）
 athena pitfall "…" [--global]   记坑（项目级/全局）；--search "<词条>" 只读跨源搜索历史坑
