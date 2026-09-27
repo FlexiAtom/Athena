@@ -142,9 +142,7 @@ impl Rule for FalsificationRecorded {
         let section = section_slice(&ctx.doc.body, "反证实验").unwrap_or_default();
         // 待测登记是 `### 待测`（反证实验的同级子标题）或 frontmatter 的 pending 标记；
         // 二者都要在整篇正文/frontmatter 层面检测，section 切片会漏掉同级子标题。
-        let pending = ctx.doc.body.contains("### 待测")
-            || ctx.doc.body.contains("[pending]")
-            || ctx.doc.fm.falsification.as_deref() == Some("pending");
+        let pending = !pending_markers(ctx.doc.fm.falsification.as_deref(), &ctx.doc.body).is_empty();
         let real = table_has_result(&section, &ctx.terms.falsification_evidence_tokens());
         if !pending && !real {
             return vec![Finding {
@@ -237,6 +235,53 @@ fn table_has_result(section: &str, tokens: &[String]) -> bool {
     false
 }
 
+/// 待测登记的三处文本判据，逐处返回**人可读的出处**（`complete` 的补救指引必须把
+/// 命中的全列出来——早先只给一条，照着做完仍被另外两处拦，等于原地打转）。
+///
+/// 正文侧判定**跳过围栏代码块与行内代码**：描述这套机制的文档（审计报告、报错文案
+/// 本身）常把字面标记写在反引号里，此前会自触发 `complete` 的硬闸——讲机制的文档
+/// 不该变成机制的受害者。
+pub fn pending_markers(fm_value: Option<&str>, body: &str) -> Vec<String> {
+    let mut hits = Vec::new();
+    if fm_value == Some("pending") {
+        hits.push("frontmatter 的 `falsification: pending`（填了真实证据后改成 done，或删掉该行）".into());
+    }
+    let prose = strip_code(body);
+    if prose.contains("### 待测") {
+        hits.push("正文的 `### 待测` 章节（整段删掉，或换成已填真实结果的反证表）".into());
+    }
+    if prose.contains("[pending]") {
+        hits.push("正文的 `[pending]` 标记（清算后删掉该标记）".into());
+    }
+    hits
+}
+
+/// 只留散文：抹掉 ``` 围栏代码块与 `行内代码` 的内容。
+fn strip_code(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut fence = false;
+    for line in body.lines() {
+        if line.trim_start().starts_with("```") {
+            fence = !fence;
+            continue;
+        }
+        if fence {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(start) = rest.find('`') {
+            out.push_str(&rest[..start]);
+            rest = match rest[start + 1..].find('`') {
+                Some(end) => &rest[start + 2 + end..],
+                None => "",
+            };
+        }
+        out.push_str(rest);
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,5 +332,33 @@ mod tests {
         assert!(sec.contains("table"));
         assert!(!sec.contains("[pending]"));
         assert!(!sec.contains("secret"));
+    }
+
+    /// 回归（C6/C43）：`complete` 的硬闸有三处判据，此前只报一条，照着做完仍被
+    /// 另外两处拦 —— 原地打转。命中几处就必须列几处。
+    #[test]
+    fn pending_markers_list_every_hit_not_only_the_first() {
+        let body = "## 反证实验\n### 待测\n- 状态：pending\n正文另有 [pending] 标记\n";
+        let hits = pending_markers(Some("pending"), body);
+        assert_eq!(hits.len(), 3, "三处全中却只报一处：{hits:?}");
+        // 单处命中时只报那一处（不虚报）。
+        assert_eq!(pending_markers(None, "正文有 [pending] 标记").len(), 1);
+        assert_eq!(pending_markers(Some("pending"), "干净正文").len(), 1);
+        assert!(pending_markers(Some("done"), "干净正文").is_empty());
+    }
+
+    /// 回归（C15）：描述这套机制的文档（审计报告、CLI 报错文案）把字面标记写在
+    /// 反引号/围栏里，此前会自触发硬闸 —— 讲机制的文档不该变成机制的受害者。
+    #[test]
+    fn pending_markers_ignore_text_inside_code_spans_and_fences() {
+        let doc = "说明：判据是 `### 待测`、`[pending]` 与 frontmatter 的 pending。\n\
+                   ```text\n### 待测\n- [pending]\n```\n";
+        assert!(
+            pending_markers(None, doc).is_empty(),
+            "引文里的字面标记不应被当成登记：{:?}",
+            pending_markers(None, doc)
+        );
+        // 真登记（不在代码里）仍要命中。
+        assert_eq!(pending_markers(None, "### 待测\n- 理由：CI 无显示服务器").len(), 1);
     }
 }

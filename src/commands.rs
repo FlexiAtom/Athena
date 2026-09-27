@@ -497,7 +497,7 @@ pub fn promote(store: &Store, project: &str, slug: &str, skip: Option<&str>) -> 
                 message: "--skip-falsification 需要具象理由（如“CI 无显示服务器…”）".into(),
             });
         }
-        register_pending(store, &mut doc, project, slug, reason)?;
+        register_pending_in_doc(&mut doc, reason);
     }
     let findings = check_item(&it.path, &doc, target, &terms, &mode);
     for f in &findings {
@@ -513,6 +513,11 @@ pub fn promote(store: &Store, project: &str, slug: &str, skip: Option<&str>) -> 
 
     let src = it.path.clone();
     let new_path = move_to_status(store, &mut doc, &it.path, project, slug, target)?;
+    // 校验全过、文件也挪了，才写台账：此前登记先落盘，被拒时留下"已登记未推进"的
+    // 假登记与脏状态库（git status 见 M pending.md）。
+    if let Some(reason) = skip {
+        append_pending_ledger(store, project, slug, reason);
+    }
     let mut touched = vec![srel(store, &src), srel(store, &new_path)];
     if skip.is_some() {
         touched.push(srel(store, &store.project_dir(project).join("pending.md")));
@@ -527,13 +532,101 @@ pub fn promote(store: &Store, project: &str, slug: &str, skip: Option<&str>) -> 
     Ok(())
 }
 
-fn register_pending(
+/// 状态动作代为清算反证登记时，把原登记**搬进正文留痕**，返回是否真有登记被抹掉。
+/// 这些动作删的是"证据义务"本身；不搬走原文就等于无痕绕道（禁忌 3 的机器面）。
+fn strike_pending_registration(
     store: &Store,
     doc: &mut Document,
     project: &str,
     slug: &str,
-    reason: &str,
-) -> Result<()> {
+    action: &str,
+) -> bool {
+    let had = doc.fm.falsification.as_deref() == Some("pending");
+    let reason = pending_reason(store, project, slug);
+    let had_marker = !rules::pending_markers(doc.fm.falsification.as_deref(), &doc.body).is_empty();
+    doc.fm.falsification = None;
+    doc.body = strip_pending_block(&doc.body);
+    if had || had_marker {
+        let note = match reason.as_deref() {
+            Some(r) => format!("- 反证登记未清算即{action}（绕过，非清算）· 原理由：{r}"),
+            None => format!("- 反证登记未清算即{action}（绕过，非清算）· 正文待测标记随本动作移除"),
+        };
+        doc.body = append_to_section(&doc.body, "决策", &note);
+    }
+    clear_pending_entry(store, project, slug);
+    had || had_marker
+}
+
+/// 把"未清算即<action>"那行反过来变成一条正式待测登记（`resume` 用）。
+fn revive_pending_registration(store: &Store, doc: &mut Document, project: &str, slug: &str) -> bool {
+    let line = doc.body.lines().find(|l| l.contains("反证登记未清算即")).map(String::from);
+    let Some(line) = line else {
+        return false;
+    };
+    if doc.fm.falsification.as_deref() == Some("pending") {
+        return false;
+    }
+    let reason = match line.split_once("原理由：") {
+        Some((_, rest)) => rest.trim().to_string(),
+        None => "曾以状态动作绕过、从未实机执行".to_string(),
+    };
+    doc.fm.falsification = Some("pending".into());
+    append_pending_ledger(store, project, slug, &reason);
+    true
+}
+
+fn report_bypass(action: &str, slug: &str, struck: bool) {
+    if struck {
+        println!(
+            "⚠ {action} 代你抹掉了 {slug} 未清算的待测反证登记——这是**绕过**，不是清算。\n             = 原登记已搬进正文「决策」章节留痕；complete 前仍须真跑，或按禁忌 6 在决策里写明为何不再追。"
+        );
+    }
+}
+
+/// 从 pending.md 读回某 slug 的登记理由（首列精确匹配，不做子串搜索）。
+fn pending_reason(store: &Store, project: &str, slug: &str) -> Option<String> {
+    let text = std::fs::read_to_string(store.project_dir(project).join("pending.md")).ok()?;
+    for line in text.lines() {
+        if let Some((head, rest)) = ledger_split(line) {
+            if head == slug {
+                return rest.split_once("理由：").map(|(_, r)| r.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 台账行的结构：`- [ ] <slug> · <正文>` → (slug, 正文)。
+fn ledger_split(line: &str) -> Option<(&str, &str)> {
+    let t = line.trim_start();
+    let rest = t.strip_prefix("- [ ] ").or_else(|| t.strip_prefix("- [x] "))?;
+    let (head, tail) = rest.split_once(" · ")?;
+    Some((head.trim(), tail))
+}
+
+/// 删掉正文里的 `### 待测` 小节（连标题），止于下一个同级或更高级标题。
+fn strip_pending_block(body: &str) -> String {
+    let lines: Vec<&str> = body.lines().collect();
+    let level_of = |l: &str| l.chars().take_while(|ch| *ch == '#').count();
+    let Some(start) = lines.iter().position(|l| l.trim_start().starts_with("### 待测")) else {
+        return body.to_string();
+    };
+    let base = level_of(lines[start]);
+    let mut end = lines.len();
+    for (i, l) in lines.iter().enumerate().skip(start + 1) {
+        if l.trim_start().starts_with('#') && level_of(l) <= base {
+            end = i;
+            break;
+        }
+    }
+    let mut out = lines[..start].to_vec();
+    out.extend_from_slice(&lines[end..]);
+    out.join("\n") + "\n"
+}
+
+/// 仅改内存中的文档：置 frontmatter 标记 + 插入 `### 待测` 小节。
+/// 台账行不在这里写（校验没过就不该留下假登记）。
+fn register_pending_in_doc(doc: &mut Document, reason: &str) {
     doc.fm.falsification = Some("pending".into());
     let block = format!(
         "\n### 待测（pending verification）\n\
@@ -544,14 +637,18 @@ fn register_pending(
     );
     // 插入到 `### 反证实验` 章节末尾。
     doc.body = insert_after_section(doc.body.trim_end(), "反证实验", &block);
-    // 追加到 pending.md（相对 ~/.Athena 的项目目录，§5.1f）。
+}
+
+/// 只写台账那一行（与"改文档"分开，供 promote 校验通过后落笔、resume 恢复登记复用）。
+fn append_pending_ledger(store: &Store, project: &str, slug: &str, reason: &str) {
     let pend = store.project_dir(project).join("pending.md");
     let line = format!(
         "- [ ] {slug} · 跳过反证 · 理由：{reason} · {}",
         templates::today()
     );
-    append_to_markdown_file(&pend, &line)?;
-    Ok(())
+    if let Err(e) = append_to_markdown_file(&pend, &line) {
+        println!("⚠ 待测台账没写进去（{e}）——请手工补一行 pending.md。");
+    }
 }
 
 pub fn complete(store: &Store, project: &str, slug: &str) -> Result<()> {
@@ -562,14 +659,21 @@ pub fn complete(store: &Store, project: &str, slug: &str) -> Result<()> {
             message: format!("complete 需从 working/ 出发，当前 {}", it.status),
         });
     }
-    // 唯一保留的硬阻塞：pending 反证未清算（§5.1f / §6 rule3）。
-    let has_pending = it.doc.fm.falsification.as_deref() == Some("pending")
-        || it.doc.body.contains("[pending]")
-        || it.doc.body.contains("### 待测");
-    if has_pending {
+    // 唯一保留的硬阻塞：pending 反证未清算（§5.1f / §6 rule3）。三处判据一次列全：
+    // 只给一条指引，照着做完仍会被另外两处拦住。
+    let hits = rules::pending_markers(it.doc.fm.falsification.as_deref(), &it.doc.body);
+    if !hits.is_empty() {
+        let listed = hits
+            .iter()
+            .enumerate()
+            .map(|(i, h)| format!("  {}. {}", i + 1, h))
+            .collect::<Vec<_>>()
+            .join("\n");
         return Err(Error::Transition {
             message: format!(
-                "{slug} 仍有未清算的 `pending` 反证 —— 实际执行并填真实结果、删除 ### 待测 段后再 complete。"
+                "{slug} 仍有未清算的待测反证，命中共 {} 处：\n{}\n                 = 三处全部清掉才能 complete；`resume` 救不了（它只从 finished/ 出发）。\n                 = 若这是被 freeze/community 绕过留下的，见正文「决策」章节里「反证登记未清算即」那行的原理由。",
+                hits.len(),
+                listed
             ),
         });
     }
@@ -608,11 +712,10 @@ pub fn freeze(store: &Store, project: &str, slug: &str, reason: &str) -> Result<
     }
     let mut doc = it.doc.clone();
     doc.fm.outcome = Some(Outcome::Frozen);
-    doc.fm.falsification = None;
+    let struck = strike_pending_registration(store, &mut doc, project, slug, "freeze");
     doc.body = append_to_section(&doc.body, "决策", &format!("- 冻结原因：{reason}"));
     let src = it.path.clone();
     let new_path = move_to_status(store, &mut doc, &it.path, project, slug, "finished")?;
-    clear_pending_entry(store, project, slug);
     let touched = vec![
         srel(store, &src),
         srel(store, &new_path),
@@ -625,6 +728,7 @@ pub fn freeze(store: &Store, project: &str, slug: &str, reason: &str) -> Result<
         &actor(),
     )?;
     println!("✓ {slug}: {} → finished (outcome: frozen)", it.status);
+    report_bypass("freeze", slug, struck);
     Ok(())
 }
 
@@ -636,13 +740,30 @@ pub fn community(store: &Store, project: &str, slug: &str) -> Result<()> {
             message: "已在 community/".into(),
         });
     }
+    // block 模式下 promote 会因未清算反证拒绝，而 community 此前不查——等于给入口
+    // 宣布的唯一证据类硬闸留了一条更省事的逃生口。转社区同样是"在途"，一并受闸。
+    let terms = TermsRegistry::load(&store.terms_toml())?;
+    if effective_falsification_mode(store, &terms) == "block" {
+        let hits = rules::pending_markers(it.doc.fm.falsification.as_deref(), &it.doc.body);
+        if !hits.is_empty() {
+            return Err(Error::Transition {
+                message: format!(
+                    "block 模式下不得把带未清算待测反证的 {slug} 转进 community（它是 promote 硬闸的绕道）。\n                     = 先实际执行并填真实结果；确实要先放出去，就在 config.toml 把 falsification_mode 换回 warn 并接受 ⚠ 提示。"
+                ),
+            });
+        }
+    }
     let mut doc = it.doc.clone();
-    doc.fm.falsification = None;
+    let struck = strike_pending_registration(store, &mut doc, project, slug, "community");
     let src = it.path.clone();
     let new_path = move_to_status(store, &mut doc, &it.path, project, slug, "community")?;
     Git::commit_paths(
         &store.root,
-        &[srel(store, &src), srel(store, &new_path)],
+        &[
+            srel(store, &src),
+            srel(store, &new_path),
+            srel(store, &store.project_dir(project).join("pending.md")),
+        ],
         &format!("community: {slug} → community"),
         &actor(),
     )?;
@@ -650,6 +771,7 @@ pub fn community(store: &Store, project: &str, slug: &str) -> Result<()> {
         "✓ {slug}: {} → community（放出去请人帮忙，供人搬运，非机器同步）",
         it.status
     );
+    report_bypass("community", slug, struck);
     Ok(())
 }
 
@@ -663,18 +785,23 @@ pub fn resume(store: &Store, project: &str, slug: &str) -> Result<()> {
     }
     let mut doc = it.doc.clone();
     doc.fm.outcome = None;
+    // freeze/community 抹掉登记与台账行后，resume 只把文件挪回来，留下"从未真清算却
+    // 查无登记"的不一致。现在按正文留痕把登记恢复。
+    let revived = revive_pending_registration(store, &mut doc, project, slug);
     if !doc.has_heading("反证实验") {
         println!("⚠ 重新推进要求重新剪枝（不能无声复活，§5.2）—— 当前无反证章节，请补。");
     }
     let src = it.path.clone();
     let new_path = move_to_status(store, &mut doc, &it.path, project, slug, "working")?;
-    Git::commit_paths(
-        &store.root,
-        &[srel(store, &src), srel(store, &new_path)],
-        &format!("resume: {slug} → working"),
-        &actor(),
-    )?;
+    let mut touched = vec![srel(store, &src), srel(store, &new_path)];
+    if revived {
+        touched.push(srel(store, &store.project_dir(project).join("pending.md")));
+    }
+    Git::commit_paths(&store.root, &touched, &format!("resume: {slug} → working"), &actor())?;
     println!("✓ {slug}: finished → working（请重新完成剪枝）");
+    if revived {
+        println!("· 已恢复当年被状态动作**绕过**（而非清算）的待测登记：pending.md 与 frontmatter 都补回了。");
+    }
     Ok(())
 }
 
@@ -1211,6 +1338,11 @@ fn move_to_status(
     target: &str,
 ) -> Result<PathBuf> {
     doc.fm.status = target.to_string();
+    // outcome 只对 finished/ 有意义；留在 working/community 里会产出
+    // "status: working 且 outcome: done" 的自相矛盾文档，而 validate 对它一字不提。
+    if target != "finished" {
+        doc.fm.outcome = None;
+    }
     doc.fm.updated_at = templates::now_iso();
     doc.fm.updated_by = actor();
     let new_path = store.status_dir(project, target).join(format!("{slug}.md"));
@@ -1240,13 +1372,30 @@ fn append_to_markdown_file(path: &Path, line: &str) -> Result<()> {
 }
 
 fn clear_pending_entry(store: &Store, project: &str, slug: &str) {
+    // 台账行首列就是 slug，按结构精确比对后删除。此前是"slug 加空格"的子串搜索：
+    // 别人的理由里只要提过这个 slug，那一行就被连坐删掉（实测三条删剩一条），
+    // 被删那条的反证义务从此无痕消失。
     let pend = store.project_dir(project).join("pending.md");
-    if let Ok(t) = std::fs::read_to_string(&pend) {
-        let kept: Vec<&str> = t
-            .lines()
-            .filter(|l| !(l.contains("- [ ]") && l.contains(&format!("{slug} "))))
-            .collect();
-        let _ = std::fs::write(&pend, format!("{}\n", kept.join("\n")));
+    let Ok(text) = std::fs::read_to_string(&pend) else {
+        return;
+    };
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|l| match ledger_split(l) {
+            Some((head, _)) => head != slug,
+            None => true,
+        })
+        .collect();
+    if kept.len() == text.lines().count() {
+        return;
+    }
+    let next = if kept.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", kept.join("\n"))
+    };
+    if let Err(e) = std::fs::write(&pend, next) {
+        println!("⚠ 待测台账没清掉（{e}）。");
     }
 }
 
@@ -1616,5 +1765,150 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&at);
+    }
+
+    fn batch_b_doc(body: &str, pending: bool) -> Document {
+        Document {
+            fm: Frontmatter {
+                slug: "exp".into(),
+                kind: Kind::Proposal,
+                status: "working".into(),
+                project: "demo".into(),
+                updated_by: "t".into(),
+                updated_at: "t".into(),
+                content_hash: "sha256:pending".into(),
+                outcome: None,
+                falsification: Some("pending".into()).filter(|_| pending),
+                priority: None,
+            },
+            body: body.into(),
+        }
+    }
+
+    fn batch_b_store(tag: &str) -> Store {
+        let root = std::env::temp_dir().join(format!("athena-{tag}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("projects/demo")).unwrap();
+        Store { root }
+    }
+
+    /// 回归（C31）：清理台账用的是"`slug` + 空格"子串搜索，别的条目只要**理由里提过
+    /// 这个 slug** 就被连坐删掉（实测三条删剩一条），那条的反证义务无痕消失。
+    #[test]
+    fn clear_pending_entry_deletes_only_the_owning_line() {
+        let store = batch_b_store("b31");
+        let pend = store.project_dir("demo").join("pending.md");
+        std::fs::write(
+            &pend,
+            "- [ ] exp · 跳过反证 · 理由：CI 无显示服务器 · 2026-01-01\n\
+             - [ ] other · 跳过反证 · 理由：涉及 exp 的窗口，需复验 · 2026-01-01\n\
+             - [ ] third · 跳过反证 · 理由：无关 · 2026-01-01\n",
+        )
+        .unwrap();
+
+        clear_pending_entry(&store, "demo", "exp");
+
+        let left = std::fs::read_to_string(&pend).unwrap();
+        assert!(!left.contains("- [ ] exp ·"), "自己的行应被清掉：\n{left}");
+        assert!(
+            left.contains("- [ ] other ·") && left.contains("- [ ] third ·"),
+            "提到该 slug 的别人条目不得被连坐删除：\n{left}"
+        );
+        let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    /// 回归（C16/C17/C45）：freeze/community 原先**静默**抹掉 frontmatter 的待测标记
+    /// 并删掉台账行 —— 绕过却无痕。现在原理由搬进正文「决策」章节留痕，并回报绕过。
+    #[test]
+    fn status_actions_strike_pending_but_leave_an_audit_trail() {
+        let store = batch_b_store("b16");
+        let pend = store.project_dir("demo").join("pending.md");
+        std::fs::write(&pend, "- [ ] exp · 跳过反证 · 理由：CI 无显示服务器 · 2026-01-01\n").unwrap();
+        let mut doc = batch_b_doc(
+            "## 反证实验\n### 待测\n- 理由：CI 无显示服务器\n- 状态：pending\n\n## 决策\n- 决定：先推进\n",
+            true,
+        );
+
+        let struck = strike_pending_registration(&store, &mut doc, "demo", "exp", "freeze");
+
+        assert!(struck, "确有登记时被抹掉必须回报，供调用方打印绕过提示");
+        assert_eq!(doc.fm.falsification, None, "frontmatter 标记应被清除");
+        assert!(
+            !doc.body.contains("### 待测"),
+            "待测小节应被移除：\n{}",
+            doc.body
+        );
+        assert!(
+            doc.body.contains("反证登记未清算即freeze") && doc.body.contains("原理由：CI 无显示服务器"),
+            "原理由必须留在「决策」章节：\n{}",
+            doc.body
+        );
+        assert!(
+            doc.body.contains("- 决定：先推进"),
+            "原有决策不得被覆盖：\n{}",
+            doc.body
+        );
+        assert!(
+            !std::fs::read_to_string(&pend).unwrap().contains("- [ ] exp ·"),
+            "台账行应随之清掉"
+        );
+        let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    /// 回归（C44）：`resume` 只把文件挪回 working，登记早已被 freeze/community 抹净
+    /// —— 于是"从未真跑过反证"的项带着查无登记的状态回来，complete 也不再拦它。
+    /// 现在按正文留痕把登记恢复。
+    #[test]
+    fn resume_revives_a_registration_that_was_bypassed_not_settled() {
+        let store = batch_b_store("b44");
+        let pend = store.project_dir("demo").join("pending.md");
+        std::fs::write(&pend, "- [ ] exp · 跳过反证 · 理由：CI 无显示服务器 · 2026-01-01\n").unwrap();
+        let mut doc = batch_b_doc("## 反证实验\n### 待测\n- 状态：pending\n\n## 决策\n", true);
+        strike_pending_registration(&store, &mut doc, "demo", "exp", "community");
+        assert_eq!(doc.fm.falsification, None);
+
+        let revived = revive_pending_registration(&store, &mut doc, "demo", "exp");
+
+        assert!(revived, "有绕过留痕时必须恢复登记");
+        assert_eq!(doc.fm.falsification.as_deref(), Some("pending"));
+        let ledger = std::fs::read_to_string(&pend).unwrap();
+        assert!(
+            ledger.contains("- [ ] exp · 跳过反证 · 理由：CI 无显示服务器"),
+            "台账应补回原理由：\n{ledger}"
+        );
+        // 已处于 pending 时不重复登记。
+        assert!(!revive_pending_registration(&store, &mut doc, "demo", "exp"));
+        assert_eq!(
+            std::fs::read_to_string(&pend)
+                .unwrap()
+                .lines()
+                .filter(|l| l.contains("- [ ] exp ·"))
+                .count(),
+            1,
+            "重复调用不得堆叠台账行"
+        );
+        let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    /// 回归（C34）：`promote --skip-falsification` 先写文档与台账、再跑校验，被拒时
+    /// 留下"已登记但未推进"的假登记（git status 见 M pending.md）。现在拆分：
+    /// 只改内存文档，校验与挪动全过了才落台账。
+    #[test]
+    fn register_pending_touches_only_the_in_memory_doc() {
+        let store = batch_b_store("b34");
+        let pend = store.project_dir("demo").join("pending.md");
+        let mut doc = batch_b_doc("## 反证实验\n", false);
+
+        register_pending_in_doc(&mut doc, "CI 无显示服务器");
+
+        assert_eq!(doc.fm.falsification.as_deref(), Some("pending"));
+        assert!(doc.body.contains("### 待测"), "待测小节应插入：\n{}", doc.body);
+        assert!(!pend.exists(), "登记阶段绝不提前写台账");
+        // 台账写入是独立一步（挪动成功后才调用）。
+        append_pending_ledger(&store, "demo", "exp", "CI 无显示服务器");
+        assert!(std::fs::read_to_string(&pend)
+            .unwrap()
+            .contains("- [ ] exp · 跳过反证 · 理由：CI 无显示服务器"));
+        let _ = std::fs::remove_dir_all(&store.root);
     }
 }
