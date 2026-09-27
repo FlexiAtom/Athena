@@ -23,6 +23,12 @@ pub enum Error {
     PathEscape {
         path: String,
     },
+    /// 路径/名称本身不合法：会静默落到意料之外的位置（幻影树、隐身子目录）。
+    BadPath {
+        what: String,
+        value: String,
+        message: String,
+    },
     /// YAML frontmatter 解析失败（§9.1：报错交编辑者修，绝不自动改）。
     Parse {
         path: String,
@@ -58,6 +64,10 @@ impl fmt::Display for Error {
                 f,
                 "路径越界: `{path}` 解析到 ~/.Athena 之外。\n\
                  = 状态内容不得离开 ~/.Athena（§1.1 位置红线）。请改用相对 ~/.Athena 的路径。"
+            ),
+            Error::BadPath { what, value, message } => write!(
+                f,
+                "{what} 非法: `{value}`\n= {message}"
             ),
             Error::Parse { path, message } => write!(
                 f,

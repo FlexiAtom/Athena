@@ -41,12 +41,15 @@ const NOTICE_HEADER: &str = "# Athena · 全局通知（广播板）\n\n\
 // ============================================================================
 
 fn resolve_project(store: &Store, flag: Option<&str>) -> Result<String> {
+    // 空串/纯空白等同未设：否则 `--project ""` 的存在性检查会被 `projects/` 顶层
+    // 目录空洞满足，写动作随即落进 `projects/pool/…` 造出幻影树。
+    let flag = flag.filter(|s| !s.trim().is_empty());
     let name = if let Some(p) = flag {
-        p.to_string()
+        p.trim().to_string()
     } else {
         let cfg = Config::load(store)?;
-        match cfg.default_project.filter(|s| !s.is_empty()) {
-            Some(dp) => dp,
+        match cfg.default_project.filter(|s| !s.trim().is_empty()) {
+            Some(dp) => dp.trim().to_string(),
             // 回退到当前目录名（常见：在项目仓库里执行）。
             None => {
                 let cwd = std::env::current_dir()?;
@@ -59,6 +62,7 @@ fn resolve_project(store: &Store, flag: Option<&str>) -> Result<String> {
             }
         }
     };
+    validate_project_name(&name)?;
     // 解析出的项目必须已存在（项目目录只由 `athena init` 创建）。否则从 `~` 等
     // 非项目根运行时会把 cwd 名当项目，静默造出"幽灵项目"：context 显示全空却标
     // (git-tracked)（假阴性），new 会凭空建 projects/<假名>/ 污染状态树。显式 --project
@@ -72,6 +76,50 @@ fn resolve_project(store: &Store, flag: Option<&str>) -> Result<String> {
         });
     }
     Ok(name)
+}
+
+/// 项目名即 `projects/<name>` 目录名，参与每一次状态读写定位。
+/// 含路径分隔符或 `..` 的名字会把整个项目的读写面指到别处（甚至状态根之外），
+/// 所以三条解析路径（`--project` / config / cwd 回落）共用这道词法校验。
+fn validate_project_name(name: &str) -> Result<()> {
+    let ok = !name.is_empty()
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if ok {
+        return Ok(());
+    }
+    Err(Error::BadPath {
+        what: "项目名".into(),
+        value: name.into(),
+        message: "只允许字母、数字与 . _ -，且不得以 `.` 开头。\n\
+                  = 若这是当前目录名（cwd 回落），请用 `--project <名>` 显式指定，或改 config 的 default_project。"
+            .into(),
+    })
+}
+
+/// slug 即 `<status>/<slug>.md` 的文件名。`new` 是唯一"凭参数造文件"的入口，
+/// 所以词法校验必须走在写盘之前：含 `/` 会落进子目录并对 context/validate
+/// 双双隐身（目录扫描只看一层），含 `..` 则直接把状态文件写到状态根之外。
+fn validate_slug(slug: &str) -> Result<()> {
+    let ok = !slug.is_empty()
+        && !slug.starts_with('.')
+        && !slug.starts_with('-')
+        && !slug.ends_with(".md")
+        && slug
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if ok {
+        return Ok(());
+    }
+    Err(Error::BadPath {
+        what: "slug".into(),
+        value: slug.into(),
+        message: "只允许字母、数字与 . _ -；不得以 `.`/`-` 开头、不得含 `/`、`..`、空白，也不得以 `.md` 结尾。\n\
+                  = slug 直接成为状态文件名，越界或落进子目录的项对 context/validate 永久隐身。"
+            .into(),
+    })
 }
 
 fn actor() -> String {
@@ -98,6 +146,28 @@ fn require_initialized(store: &Store) -> Result<()> {
 // ============================================================================
 // init
 // ============================================================================
+
+/// `init` 建出的项目必备结构。缺任何一项都会让"项目已就绪"这个证据失真：
+/// 旧判据只看四个状态目录，于是 `write projects/<名>/…` 顺手建出的半套树报"自洽"
+/// exit 0，直到下一次 `new` 才 IO 错。
+fn project_skeleton_gaps(store: &Store, project: &str) -> Vec<String> {
+    let dir = store.project_dir(project);
+    let mut gaps = Vec::new();
+    if !dir.is_dir() {
+        return vec!["<整个项目目录>".into()];
+    }
+    for st in STATUSES {
+        if !dir.join(st).is_dir() {
+            gaps.push(format!("{st}/"));
+        }
+    }
+    for f in ["meta.md", "pitfalls.md"] {
+        if !dir.join(f).is_file() {
+            gaps.push(f.into());
+        }
+    }
+    gaps
+}
 
 pub fn init(
     store: &Store,
@@ -241,6 +311,7 @@ fn write_if_absent(path: &Path, text: &str) -> Result<()> {
 
 pub fn new_item(store: &Store, project: &str, slug: &str, kind: &str) -> Result<()> {
     require_initialized(store)?;
+    validate_slug(slug)?;
     // 唯一性：任意进行中状态目录不得同名（§5.2a）。
     if let Some(it) = find_item(store, project, slug)? {
         if it.status != "finished" {
@@ -323,6 +394,20 @@ pub fn validate(store: &Store, project: &str) -> Result<bool> {
     let mut has_error = false;
     let mut total = 0usize;
     println!("athena validate · 项目 {project} · 反证模式={mode}");
+    // 项目骨架完整性：`write projects/<名>/…` 也会顺手建出目录，只建一层的项目
+    // 对"四目录在不在"的旧判据完全自洽，直到下一次 `new` 才 IO 错。
+    let gaps = project_skeleton_gaps(store, project);
+    if !gaps.is_empty() {
+        has_error = true;
+        total += gaps.len();
+        println!("\n── 项目骨架 projects/{project}");
+        for g in &gaps {
+            println!(
+                "  {} [ProjectSkeleton] 缺 {g}（`athena init {project}` 会补齐既有缺失，不覆盖已有文件）",
+                Level::Error.tag()
+            );
+        }
+    }
     // 全局通知：跨项目广播，属信息横幅而非缺陷，不计入 total / 不影响自洽判定。
     if let Some(section) = context::notices_section(store) {
         println!("{}", section.trim_end());
@@ -688,10 +773,11 @@ pub fn write_path(
     require_initialized(store)?;
     // 裸状态目录路径（pool/… 等）依 --project 归位到 projects/<project>/…，
     // 防误写入状态根顶层产生幻影树；显式全路径（projects/…）保持原行为。
-    let (rel, rerouted) = route_state_rel(rel, project);
+    let (rel, rerouted) = route_state_rel(rel, project)?;
     if rerouted {
         println!("· 相对状态目录路径已归位 → {rel}（依项目 {project}；欲写顶层请改用显式路径）");
     }
+    ensure_project_target_exists(store, &rel)?;
     // 防呆：空/纯空白内容默认拒绝，避免误清空状态文件（§1.2 审计层之外的一道数据保护）；
     // 确要写空文件用 --allow-empty 显式放行。与 init --force 同类的"拒绝覆盖需显式"约定。
     if !allow_empty && content.trim().is_empty() {
@@ -728,10 +814,11 @@ pub fn write_path(
 
 pub fn append_path(store: &Store, project: &str, rel: &str, content: &str) -> Result<()> {
     require_initialized(store)?;
-    let (rel, rerouted) = route_state_rel(rel, project);
+    let (rel, rerouted) = route_state_rel(rel, project)?;
     if rerouted {
         println!("· 相对状态目录路径已归位 → {rel}（依项目 {project}；欲写顶层请改用显式路径）");
     }
+    ensure_project_target_exists(store, &rel)?;
     let path = store.resolve_rel(&rel)?;
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p)?;
@@ -1058,14 +1145,60 @@ fn srel(store: &Store, p: &Path) -> PathBuf {
 /// `projects/<project>/…`，杜绝误写入状态根顶层（write-ignores-project 缺陷）。
 /// 已限定路径（projects/…、templates/…、pitfalls/… 等）原样返回。
 /// 返回 (归位后路径, 是否发生归位)。
-fn route_state_rel(rel: &str, project: &str) -> (String, bool) {
+/// 裸状态目录路径（`pool/x.md`）归位到 `projects/<project>/pool/x.md`。
+///
+/// 归位判定是**词法首段比对**，所以两种"看着像状态路径"的写法必须先拒：
+/// ① 参数带首尾空白（`" pool/x.md"`）会静默不归位，把状态文件写进状态根顶层
+/// 一个叫 `" pool"` 的目录，context/validate 一字不提；② 首段去掉尾随空白后才
+/// 等于状态名（`pool /x.md`）同理。真正带 `..`/绝对路径的越界由 `resolve_rel` 拦。
+fn route_state_rel(rel: &str, project: &str) -> Result<(String, bool)> {
+    if rel != rel.trim() {
+        return Err(Error::BadPath {
+            what: "状态路径".into(),
+            value: rel.into(),
+            message: "首尾含空白会绕过项目归位，把文件写进状态根顶层的幻影目录。请去掉多余空白。"
+                .into(),
+        });
+    }
     let trimmed = rel.trim_start_matches("./");
     let first = trimmed.split(['/', '\\']).next().unwrap_or("");
-    if STATUSES.contains(&first) {
-        (format!("projects/{project}/{trimmed}"), true)
-    } else {
-        (rel.to_string(), false)
+    if first != first.trim_end() && STATUSES.contains(&first.trim_end()) {
+        return Err(Error::BadPath {
+            what: "状态路径".into(),
+            value: rel.into(),
+            message: format!(
+                "首段 `{first}` 含尾随空白，不等于任何状态目录（{}），因此不会被归位到 projects/{project}/ 下。",
+                STATUSES.join("|")
+            ),
+        });
     }
+    if STATUSES.contains(&first) {
+        Ok((format!("projects/{project}/{trimmed}"), true))
+    } else {
+        Ok((rel.to_string(), false))
+    }
+}
+
+/// `write`/`append` 只允许落到**已存在**的项目目录里。项目骨架由 `init` 建立；
+/// 顺手 `create_dir_all` 会造出半套项目（validate 只看四目录在不在，故报"自洽"，
+/// 直到下一次 `new` 才 IO 错），把"项目已就绪"的证据变成假阴性。
+fn ensure_project_target_exists(store: &Store, rel: &str) -> Result<()> {
+    let mut segs = rel.split('/');
+    let project = match (segs.next(), segs.next()) {
+        (Some("projects"), Some(p)) => p.to_string(),
+        _ => return Ok(()),
+    };
+    if store.project_dir(&project).is_dir() {
+        return Ok(());
+    }
+    Err(Error::BadPath {
+        what: "目标项目".into(),
+        value: project.clone(),
+        message: format!(
+            "`projects/{project}` 不存在，写入不会替你建项目骨架。\n\
+             = 新项目先 `athena init {project}`；裸状态目录路径（pool/… 等）会自动归位到已解析的项目下，不必手写 projects/ 前缀。"
+        ),
+    })
 }
 
 /// 把工作项移动到目标状态目录：更新 frontmatter，写新文件，删旧文件。返回新文件路径。
@@ -1253,12 +1386,12 @@ mod tests {
     #[test]
     fn route_state_rel_prefixes_bare_status_dirs_under_project() {
         for st in STATUSES {
-            let (r, changed) = route_state_rel(&format!("{st}/x.md"), "demo");
+            let (r, changed) = route_state_rel(&format!("{st}/x.md"), "demo").unwrap();
             assert!(changed, "{st}/ 裸路径应触发归位");
             assert_eq!(r, format!("projects/demo/{st}/x.md"));
         }
         // ./ 前缀也归位。
-        let (r, changed) = route_state_rel("./pool/x.md", "demo");
+        let (r, changed) = route_state_rel("./pool/x.md", "demo").unwrap();
         assert!(changed);
         assert_eq!(r, "projects/demo/pool/x.md");
     }
@@ -1273,10 +1406,118 @@ mod tests {
             "notices.md",
             "projects/demo/pending.md",
         ] {
-            let (r, changed) = route_state_rel(rel, "demo");
+            let (r, changed) = route_state_rel(rel, "demo").unwrap();
             assert!(!changed, "{rel} 不应被归位");
             assert_eq!(r, rel);
         }
+    }
+
+    /// 回归（C28）：归位是词法首段比对，`" pool/x.md"` 此前绕过归位、把状态文件
+    /// 写进状态根顶层一个叫 `" pool"` 的目录，且 rc=0、context/validate 一字不提。
+    #[test]
+    fn route_state_rel_rejects_whitespace_so_bare_dirs_cannot_escape_rerouting() {
+        for rel in [" pool/x.md", "pool/x.md ", "\tpool/x.md"] {
+            assert!(
+                route_state_rel(rel, "demo").is_err(),
+                "首尾空白的状态路径必须被拒，而不是静默不归位：{rel:?}"
+            );
+        }
+        // 首段去掉尾随空白后才等于状态名：同样必须拒，不能默默落到顶层 `pool /`。
+        assert!(route_state_rel("pool /x.md", "demo").is_err());
+        // 与状态名无关的目录仍原样放行（不该被这道校验误伤）。
+        assert!(route_state_rel("scratch/a.md", "demo").is_ok());
+    }
+
+    /// 回归（C20/C4）：slug 直接成为状态文件名。含 `..` 曾把 1.7 KB 文件写到状态根
+    /// 之外（报错来自随后的 git add，坏文件不清理）；含 `/` 落进子目录后对
+    /// context/validate 双双隐身（目录扫描只看一层）。
+    #[test]
+    fn validate_slug_rejects_traversal_separators_and_blanks() {
+        for bad in [
+            "",
+            "..",
+            "../../evil",
+            "a/b",
+            "a\\b",
+            " pool",
+            ".hidden",
+            "-flag",
+            "x.md",
+            "中文 混空格",
+        ] {
+            assert!(validate_slug(bad).is_err(), "非法 slug 应被拒：{bad:?}");
+        }
+        for ok in ["plain", "a-b", "a_b", "a.v2", "带中文的slug", "12"] {
+            assert!(validate_slug(ok).is_ok(), "合法 slug 不应被误伤：{ok:?}");
+        }
+    }
+
+    /// 回归（C41/C5）：`--project ""` 的存在性检查曾被 `projects/` 顶层自身满足，
+    /// 写动作随即落进 `projects/pool/…` 幻影树。空串与纯空白一律按未指定处理。
+    #[test]
+    fn resolve_project_treats_blank_flag_as_unset() {
+        let tag = std::process::id();
+        let root = std::env::temp_dir().join(format!("athena-blank-{tag}"));
+        let at = std::env::temp_dir().join(format!("athena-blank-at-{tag}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(&at).unwrap();
+        let store = Store { root: root.clone() };
+
+        for blank in ["", "   "] {
+            assert!(
+                resolve_project(&store, Some(blank)).is_err(),
+                "空 project 不得被 `projects/` 顶层空洞放行"
+            );
+        }
+        // 项目名本身也不得携带路径分隔符：否则整个项目的读写面指向别处。
+        init(&store, "demo", "AGENTS.md", &at, false, false).unwrap();
+        for bad in ["../demo", "a/b", ".", "./", "demo/x"] {
+            assert!(
+                resolve_project(&store, Some(bad)).is_err(),
+                "非法项目名应被拒：{bad:?}"
+            );
+        }
+        // 含空白但去掉空白即合法的名字：按去空白后解析（不因传参习惯直接失败）。
+        assert_eq!(resolve_project(&store, Some(" demo ")).unwrap(), "demo");
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    /// 回归（C46/C5）：`write projects/<名>/…` 顺手建目录造出的半套项目，旧判据
+    /// 报"无缺失项"exit 0，直到下一次 `new` 才 IO 错。写侧拒、读侧报 Error。
+    #[test]
+    fn write_rejects_unknown_project_and_validate_flags_half_skeleton() {
+        let tag = std::process::id();
+        let root = std::env::temp_dir().join(format!("athena-half-{tag}"));
+        let at = std::env::temp_dir().join(format!("athena-half-at-{tag}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(&at).unwrap();
+        let store = Store { root: root.clone() };
+        init(&store, "demo", "AGENTS.md", &at, false, false).unwrap();
+
+        // 写入不存在的项目目录：必须拒，且不留下任何目录。
+        let err = write_path(&store, "demo", "projects/ghost/readme.md", "x\n", false);
+        assert!(err.is_err(), "write 不得顺手替人生成半套项目");
+        assert!(
+            !root.join("projects/ghost").exists(),
+            "被拒的写入不应留下目录"
+        );
+
+        // 手工造半套树（模拟既有状态库），validate 必须报 Error 而非"自洽"。
+        std::fs::create_dir_all(root.join("projects/halfonly/pool")).unwrap();
+        std::fs::write(root.join("projects/halfonly/stray.md"), "y\n").unwrap();
+        let gaps = project_skeleton_gaps(&store, "halfonly");
+        assert!(
+            gaps.contains(&"working/".to_string()) && gaps.contains(&"meta.md".to_string()),
+            "半套项目的缺失项应被列出，实际：{gaps:?}"
+        );
+        assert!(project_skeleton_gaps(&store, "demo").is_empty(), "完整项目不应报缺失");
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
     }
 
     #[test]

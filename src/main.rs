@@ -52,7 +52,11 @@ struct Cli {
 enum Cmd {
     /// 实例化 ~/.Athena 骨架 + 复制协议入口文件到项目根
     Init {
-        project: String,
+        /// 要新建/补骨架的项目名（区别于全局 `--project`：那个选的是已存在的项目）
+        // 字段名即 clap 的参数 ID：早先叫 `project` 时与全局 `--project` 撞 ID，
+        // 令顶层 `--project` 的值在 init 分支里恒为 None（"静默忽略"的真身）。
+        #[arg(value_name = "PROJECT")]
+        new_project: String,
         #[arg(long, default_value = "AGENTS.md")]
         agents_file: String,
         /// 入口文件落地目录（默认为当前目录）
@@ -199,14 +203,25 @@ fn main() {
     let r: anyhow::Result<()> = (|| {
         match &cli.cmd {
             Cmd::Init {
-                project,
+                new_project,
                 agents_file,
                 at,
                 force,
                 no_agents,
             } => {
+                // `--project` 选的是"已存在的项目"，`init` 的位置参数是"要新建的项目"。
+                // 两者同时出现却不同名时静默按位置参数走，会让调用方以为自己在给
+                // 前者补骨架（实测另建出一个新项目）。这里拒绝，不做任何一方的解释。
+                if let Some(flag) = cli.project.as_deref().filter(|s| !s.trim().is_empty()) {
+                    if flag != new_project.as_str() {
+                        anyhow::bail!(
+                            "`init {new_project}` 与 `--project {flag}` 不一致：init 的项目名只认位置参数，\n\
+                             --project 用于指向**已存在**的项目、对 init 无效。想给 {flag} 补骨架请去掉 --project。"
+                        );
+                    }
+                }
                 let at = at.clone().unwrap_or_else(|| PathBuf::from("."));
-                commands::init(&store, project, agents_file, &at, *force, *no_agents)
+                commands::init(&store, new_project, agents_file, &at, *force, *no_agents)
                     .map_err(anyhow::Error::from)?;
             }
             Cmd::New { slug, kind } => {
