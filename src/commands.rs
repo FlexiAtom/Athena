@@ -15,6 +15,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
@@ -989,6 +990,104 @@ pub fn quick(store: &Store, project: &str, slug: &str, msg: &str, do_promote: bo
 // write / append / pitfall
 // ============================================================================
 
+/// 写侧互斥锁（C47）：`.locks/` 从前只被 `init` 创建、全仓没有任何使用点——看着像并发
+/// 保护，实际是假保障。现在写路径真的取锁：`O_EXCL` 占坑、写完删除，被占且没超过 TTL
+/// 就明确拒绝（另一路写入进行中），超过 TTL 视为崩溃残留、抢占并说明。
+/// 边界照 §13.2：`O_EXCL` 在 NFS/9p/virtiofs 上不保证强一致，跨边界并发仍可能互踩。
+struct WriteLock {
+    path: std::path::PathBuf,
+}
+
+impl Drop for WriteLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+const LOCK_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn acquire_write_lock(store: &Store, rel: &str) -> Result<WriteLock> {
+    let dir = store.root.join(".locks");
+    std::fs::create_dir_all(&dir)?;
+    let name: String = rel.chars().map(|c| if c == '/' { '_' } else { c }).collect();
+    let path = dir.join(format!("{name}.lock"));
+    for attempt in 0..3 {
+        match std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                let _ = writeln!(f, "{} {}", std::process::id(), actor());
+                return Ok(WriteLock { path });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let stale = std::fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .map(|t| t.elapsed().map(|el| el > LOCK_TTL).unwrap_or(false))
+                    .unwrap_or(true);
+                if stale {
+                    println!(
+                        "⚠ {name}：占锁文件超过 {} 秒未释放（疑似崩溃残留），抢占继续。",
+                        LOCK_TTL.as_secs()
+                    );
+                    let _ = std::fs::remove_file(&path);
+                    continue;
+                }
+                if attempt == 2 {
+                    return Err(Error::Conflict {
+                        message: format!(
+                            "另一路写入正占着 {rel}（{}）。等它写完再试；确认那是死锁就删掉锁文件。\n                     = 锁目录：.locks/{name}.lock",
+                            path.display()
+                        ),
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(120));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(Error::Conflict {
+        message: format!("取锁失败：{}", path.display()),
+    })
+}
+
+/// 原子整写（C27）：临时文件 + rename 替换，读侧不会看到写了一半的文件。
+fn write_atomic(path: &Path, content: &str) -> Result<()> {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("athena.tmp");
+    let tmp = path.with_file_name(format!(".{name}.tmp-{}", std::process::id()));
+    std::fs::write(&tmp, content)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// 追加（C27）：非 item doc 走 `O_APPEND` 直写——从前是"整读→拼接→整写"，多 agent 共享
+/// 状态根时后写的那份会覆盖先写的那份（丢别人的行）。item doc 必须整读整写重算
+/// content-hash，那条只能靠 `.locks/` 互斥。
+fn append_bytes(path: &Path, content: &str) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let needs_nl = match std::fs::metadata(path) {
+        Ok(m) if m.len() > 0 => {
+            let mut f = std::fs::File::open(path)?;
+            f.seek(SeekFrom::End(-1))?;
+            let mut last = [0u8; 1];
+            f.read_exact(&mut last)?;
+            last[0] != b'\n'
+        }
+        _ => false,
+    };
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    if needs_nl {
+        f.write_all(b"\n")?;
+    }
+    f.write_all(content.as_bytes())?;
+    f.flush()?;
+    Ok(())
+}
+
 pub fn write_path(
     store: &Store,
     project: &str,
@@ -1006,16 +1105,19 @@ pub fn write_path(
     ensure_project_target_exists(store, &rel)?;
     // 防呆：空/纯空白内容默认拒绝，避免误清空状态文件（§1.2 审计层之外的一道数据保护）；
     // 确要写空文件用 --allow-empty 显式放行。与 init --force 同类的"拒绝覆盖需显式"约定。
+    let path = store.resolve_rel(&rel)?;
+    let _lock = acquire_write_lock(store, &rel)?;
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    // 防呆：空/纯空白内容默认拒绝，避免误清空状态文件（§1.2 审计层之外的一道数据保护）；
+    // 确要写空文件用 --allow-empty 显式放行。与 init --force 同类的"拒绝覆盖需显式"约定。
     if !allow_empty && content.trim().is_empty() {
         return Err(Error::Conflict {
             message: format!(
                 "拒绝用空内容写入 {rel}（会清空既有内容）。确需清空请加 --allow-empty（§1.2）"
             ),
         });
-    }
-    let path = store.resolve_rel(&rel)?;
-    if let Some(p) = path.parent() {
-        std::fs::create_dir_all(p)?;
     }
     // 工作项文档：落盘前校验并归一化（拒绝静默吞下坏 frontmatter）；
     // 其它路径（pitfalls.md / terms / scratch 等）仍是原始状态文件网关（§1.1）。
@@ -1028,7 +1130,7 @@ pub fn write_path(
     } else {
         content.to_string()
     };
-    std::fs::write(&path, final_content)?;
+    write_atomic(&path, &final_content)?;
     Git::commit_paths(
         &store.root,
         &[srel(store, &path)],
@@ -1052,7 +1154,10 @@ pub fn append_path(
         println!("· 相对状态目录路径已归位 → {rel}（依项目 {project}；欲写顶层请改用显式路径）");
     }
     ensure_project_target_exists(store, &rel)?;
-    // 与 write 对称：空/纯空白默认拒（过去空内容 rc=0，还能凭空建出 0 字节文件并提交）。
+    let path = store.resolve_rel(&rel)?;
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p)?;
+    }
     if !allow_empty && content.trim().is_empty() {
         return Err(Error::Conflict {
             message: format!(
@@ -1060,27 +1165,33 @@ pub fn append_path(
             ),
         });
     }
-    let path = store.resolve_rel(&rel)?;
-    if let Some(p) = path.parent() {
-        std::fs::create_dir_all(p)?;
-    }
-    let mut cur = std::fs::read_to_string(&path).unwrap_or_default();
-    if !cur.is_empty() && !cur.ends_with('\n') {
-        cur.push('\n');
-    }
-    cur.push_str(content);
+    // 行尾补一个换行：`-c "一行"` 不带换行时，下一次追加会**粘在同一行**（台账/散文的
+    // 行语义就此失效）。O_APPEND 只保证不覆盖，不补分隔。
+    let content = if content.ends_with('\n') {
+        std::borrow::Cow::Borrowed(content)
+    } else {
+        std::borrow::Cow::Owned(format!("{content}\n"))
+    };
+    let content = content.as_ref();
     // 工作项文档：追加进正文后重算 hash 与 updated-*（避免 content-hash 悬空）；坏 frontmatter 拒绝。
     // 落点一致性也要查：append 能凭空建出 item doc，不查就成了绕过 `write` 那道闸的后门。
-    let final_content = if is_item_doc_rel(&rel) {
+    if is_item_doc_rel(&rel) {
+        // 只有"整读→改→整写"才需要互斥；O_APPEND 那条不占锁——占锁会把并发追加变成拒绝。
+        let _lock = acquire_write_lock(store, &rel)?;
+        let mut cur = std::fs::read_to_string(&path).unwrap_or_default();
+        if !cur.is_empty() && !cur.ends_with('\n') {
+            cur.push('\n');
+        }
+        cur.push_str(content);
         let mut doc = Document::parse(&path, &cur)?;
         check_item_doc_placement(&rel, &doc.fm)?;
         doc.fm.updated_by = actor();
         doc.fm.updated_at = templates::now_iso();
-        doc.render()
+        write_atomic(&path, &doc.render())?;
     } else {
-        cur
-    };
-    std::fs::write(&path, final_content)?;
+        // 台账/scratch/坑：O_APPEND 直写，不再"整读→拼接→整写"覆盖别人刚追加的行（C27）。
+        append_bytes(&path, content)?;
+    }
     Git::commit_paths(
         &store.root,
         &[srel(store, &path)],
