@@ -54,6 +54,21 @@ fn check(out: &std::process::Output, what: &str) -> Result<()> {
 }
 
 impl Git {
+    /// 状态根必须自带 `.git`：缺失时 git 会**向上**借用最近的仓库，于是 `log` 打印宿主代码史、
+    /// 每次写动作把状态提交进宿主仓库且 rc=0——审计层静默寄生在别人的仓里（C22）。
+    pub fn require_repo(root: &Path) -> Result<()> {
+        if root.join(".git").exists() {
+            return Ok(());
+        }
+        Err(Error::Git {
+            message: format!(
+                "状态根 {} 自身没有 .git，拒绝使用 git：向上借用会污染宿主仓库、`log` 也会打印那个仓的历史。\n\
+                 = 修复：`athena init <project>`（只补缺失，不覆盖已有文件）或在状态根里自行 `git init`。",
+                root.display()
+            ),
+        })
+    }
+
     pub fn init(root: &Path) -> Result<()> {
         if root.join(".git").exists() {
             return Ok(());
@@ -64,6 +79,7 @@ impl Git {
 
     /// 暂存全部并提交（若无变更则跳过）。actor 记入 commit message 尾部。
     pub fn commit_all(root: &Path, summary: &str, actor: &str) -> Result<()> {
+        Self::require_repo(root)?;
         check(&git(root, &["add", "-A"])?, "git add")?;
         // 无暂存变更时 diff --cached --quiet 返回 0，跳过提交避免空 commit。
         let dirty = git(root, &["diff", "--cached", "--quiet"])?.status.code() == Some(1);
@@ -77,6 +93,7 @@ impl Git {
     /// 只暂存**指定路径**（相对 root）并提交——精确归因，避免 `add -A` 扫入无关挂起改动。
     /// paths 为空则退化为 commit_all（兜底，如 init 的骨架批量落地）。
     pub fn commit_paths(root: &Path, paths: &[PathBuf], summary: &str, actor: &str) -> Result<()> {
+        Self::require_repo(root)?;
         if paths.is_empty() {
             return Self::commit_all(root, summary, actor);
         }
@@ -114,6 +131,7 @@ impl Git {
     }
 
     pub fn log(root: &Path, n: usize) -> Result<Vec<(String, String)>> {
+        Self::require_repo(root)?;
         let out = git(root, &["log", &format!("-{n}"), "--pretty=format:%h\x1f%s"])?;
         check(&out, "git log")?;
         let s = String::from_utf8_lossy(&out.stdout).to_string();

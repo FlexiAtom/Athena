@@ -54,6 +54,10 @@ pub enum Error {
     Git {
         message: String,
     },
+    /// ④ 生效模板存在但读不出（非法 UTF-8 等）：宁可失败，也不静默换成二进制内置内容。
+    Template {
+        message: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -82,6 +86,7 @@ impl fmt::Display for Error {
             Error::Transition { message } => write!(f, "非法转换: {message}"),
             Error::Conflict { message } => write!(f, "拒绝覆盖: {message}"),
             Error::Git { message } => write!(f, "git 错误: {message}"),
+            Error::Template { message } => write!(f, "生效模板不可用: {message}"),
         }
     }
 }

@@ -43,18 +43,35 @@ const BUILTIN: &[(&str, &str)] = &[
     ),
 ];
 
-/// 按名取模板文本：`~/.Athena/templates/<name>` 存在则用用户的，否则用内置（§2.1 优先级）。
+/// 按名取模板文本：`~/.Athena/templates/<name>`（④ overlay）存在则用用户的，否则用内置（§2.1 优先级）。
 /// 改模板不需要改代码。
-pub fn load(store: &Store, name: &str) -> String {
+///
+/// ④ 读不出来一律报错，**不再静默回退内置**（C38）：非法 UTF-8 的 overlay 从前会被当作
+/// "没有 overlay"，用户手改的模板坏一个字节就悄悄换成出厂文本，且落地时看不出来。
+pub fn load(store: &Store, name: &str) -> crate::error::Result<String> {
+    use crate::error::Error;
     let overlay = store.templates_dir().join(name);
-    if let Ok(s) = std::fs::read_to_string(&overlay) {
-        return s;
+    if overlay.exists() {
+        let bytes = std::fs::read(&overlay)?;
+        return String::from_utf8(bytes).map_err(|_| Error::Template {
+            message: format!(
+                "{name}（{}）不是合法 UTF-8，拒绝回退到二进制内置内容。\n\
+                 = 修好它，或删除该文件让 init 重铺出厂内容（删除会连带丢掉你的改动）。\n\
+                 = 非法 UTF-8 从前会被当成\"没有 overlay\"而静默铺出内置文本，那是假保障。",
+                overlay.display()
+            ),
+        });
     }
-    BUILTIN
+    Ok(BUILTIN
         .iter()
         .find(|(n, _)| *n == name)
         .map(|(_, t)| (*t).to_string())
-        .unwrap_or_default()
+        .unwrap_or_default())
+}
+
+/// ④ 是否存在（init 用它决定是否要如实告知"本次用的是二进制内置模板"）。
+pub fn overlay_present(store: &Store, name: &str) -> bool {
+    store.templates_dir().join(name).is_file()
 }
 
 /// 把 overlay 之外的内置模板铺到 ~/.Athena/templates/（init 时）。已存在则不覆盖。

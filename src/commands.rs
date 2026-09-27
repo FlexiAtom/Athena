@@ -35,7 +35,8 @@ const PROTO_VERSION: &str = "0.1.0";
 const NOTICE_HEADER: &str = "# Athena · 全局通知（广播板）\n\n\
 <!-- 单一全局信道：一次写入、各项目 `athena context`/`validate` 顶部可见。\n\
      非工单系统——不追踪逐项目已读（§3 否决、§13.6 不预支复杂度）。\n\
-     一行一条：- <时间> · <提醒>  ；处理完用 `athena notify --clear` 或手动删行清理。 -->\n\n";
+     一条一项：`- <时间> · <提醒>`，正文多行时后续行缩进两格作为该条续行（一起渲染）。\n\
+     处理完用 `athena notify --clear` 或手动删行清理。 -->\n\n";
 
 // ============================================================================
 // 项目 / actor 解析
@@ -132,16 +133,18 @@ fn actor() -> String {
 }
 
 fn require_initialized(store: &Store) -> Result<()> {
-    if store.root.join("projects").exists() {
-        Ok(())
-    } else {
-        Err(Error::Transition {
+    if !store.root.join("projects").exists() {
+        return Err(Error::Transition {
             message: format!(
                 "状态库尚未初始化（{} 不存在）。先运行 `athena init <project>`。",
                 store.root.display()
             ),
-        })
+        });
     }
+    // 审计层属于"已初始化"的一部分：`.git` 一旦丢失，写动作会寄生进宿主仓库、
+    // `log` 会打印别人的历史，而命令照样 rc=0（C22）。放在任何写盘之前拒。
+    Git::require_repo(&store.root)?;
+    Ok(())
 }
 
 // ============================================================================
@@ -179,14 +182,44 @@ pub fn init(
     no_agents: bool,
 ) -> Result<()> {
     // 防呆（§1.1 安装语义）：先判入口文件，避免"半初始化 + 静默覆盖"。
-    // 已存在且内容不同 → 除非 --force 否则整体拒绝，且不产生任何状态（原子、无副作用）。
-    let rendered = render_entry(store, PROTO_VERSION);
+    // **全部前置检查排在任何写盘之前**（C39）：从前 `read_to_string(&target).ok()` 把
+    // "读不出来"（非法 UTF-8、权限）吞成"文件不存在"，于是既有的手改入口不加 --force 也被
+    // 静默覆盖，或骨架建完后才报 IO 错、留下一套半成品。
+    let overlay_entry = templates::overlay_present(store, "AGENTS.md.tpl");
+    let rendered = render_entry(store, PROTO_VERSION)?;
     let target = at.join(agents_file);
-    let existing = std::fs::read_to_string(&target).ok();
+    // --no-agents 承诺"完全不触碰目标仓库"，因此连读都不读。
+    let mut existing: Option<String> = None;
+    if !no_agents {
+        match std::fs::read(&target) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(s) => existing = Some(s),
+                Err(_) if force => {}
+                Err(_) => {
+                    return Err(Error::Conflict {
+                        message: format!(
+                            "`{}` 读不出（不是合法 UTF-8），无法与模板比对 → 拒绝：不覆盖、也不建任何骨架。\n\
+                             = 确认要丢弃它：加 `--force`；只想补状态骨架：加 `--no-agents`。",
+                            target.display()
+                        ),
+                    })
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(Error::Conflict {
+                    message: format!(
+                        "`{}` 存在但读不出来（{e}）→ 拒绝：不覆盖、也不建任何骨架（免留半套项目）。\n\
+                         = 先修好该文件的可读性；只补状态骨架加 `--no-agents`；确认要整份替换加 `--force`。",
+                        target.display()
+                    ),
+                })
+            }
+        }
+    }
     let write_entry = match &existing {
         None => !no_agents,
         Some(cur) if *cur == rendered => false, // 幂等：已是最新，不重写
-        Some(_) if no_agents => false,          // 存在且不同，但显式不动仓库
         Some(_) if force => true,               // 显式覆盖
         Some(_) => {
             return Err(Error::Conflict {
@@ -210,12 +243,15 @@ pub fn init(
     // 写入默认协议文件（已存在不覆盖，§2.1 覆盖机制）。
     write_if_absent(
         &store.config_toml(),
-        &templates::load(store, "config.toml.tpl"),
+        &templates::load(store, "config.toml.tpl")?,
     )?;
-    write_if_absent(&store.terms_md(), &templates::load(store, "terms.md.tpl"))?;
+    write_if_absent(
+        &store.terms_md(),
+        &templates::load(store, "terms.md.tpl")?,
+    )?;
     write_if_absent(
         &store.terms_toml(),
-        &templates::load(store, "terms.local.toml.tpl"),
+        &templates::load(store, "terms.local.toml.tpl")?,
     )?;
     write_if_absent(
         &store.global_pitfalls(),
@@ -226,6 +262,23 @@ pub fn init(
          - AI 声称完成但没跑测试 → 必须实测结果才能 complete。\n",
     )?;
     write_if_absent(&store.notices_md(), NOTICE_HEADER)?;
+    // 人话台账（C23）：入口把它列为最高优先级证据，但从前 init **从不创建**这两份文件，
+    // 于是 `context` 的台账段静默缺席——"没有文件"与"这人没说过话"被糊成同一件事。
+    write_if_absent(
+        &store.global_voice(),
+        "# 全局人话台账（跨项目约定 · 只记人的原话逐字）\n\n\
+         <!-- 格式：- <时间> [类别] 「原话」 关于:<slug|->\n\
+              类别 ∈ 指令/授权/裁决/约定/否决；[定] 标只由人给，AI 不得自加。\n\
+              AI 的转述与推断不入台账；原话不可得须标「注:转述」，不得伪装成逐字。\n\
+              只追加、禁整写覆盖（状态根多 agent 共享）：`athena append voice.md --stdin`。 -->\n",
+    )?;
+    write_if_absent(
+        &store.project_voice(project),
+        &format!(
+            "# {project} · 项目人话台账（只记人的原话逐字）\n\n\
+             <!-- 同上格式。追加：`athena append projects/{project}/voice.md --stdin`（无 --stdin 时空内容会被拒）。 -->\n"
+        ),
+    )?;
     templates::materialize_defaults(store)?;
 
     let meta = format!(
@@ -265,6 +318,7 @@ pub fn init(
         srel(store, &store.terms_md()),
         srel(store, &store.terms_toml()),
         srel(store, &store.global_pitfalls()),
+        srel(store, &store.global_voice()),
         srel(store, &store.notices_md()),
         srel(store, &store.templates_dir()),
         srel(store, &store.project_dir(project)),
@@ -275,24 +329,33 @@ pub fn init(
         &format!("init: 项目 {project} 骨架"),
         &actor(),
     )?;
+    // ④ 缺失时如实说出本次入口文本从哪来（C38）：从前静默用二进制内置，
+    // 手改过 ④ 又误删的人只会发现"我的 overlay 不知何时不生效了"。
+    let overlay_note = if overlay_entry {
+        String::new()
+    } else {
+        "· 生效模板 ④ 缺失：本次入口文本取自**二进制内置**，已铺出 ~/.Athena/templates/AGENTS.md.tpl（此后改 ④ 优先于内置）。\n"
+            .to_string()
+    };
     println!(
         "已初始化 ~/.Athena 与项目 `{project}`。\n\
+         {overlay_note}\
          {entry_note}（复制非软链，可安全提交；不含任何工作状态）。\n\
          下一步：在项目里让 AI 读本入口，再 `athena context` / `athena validate`。"
     );
     Ok(())
 }
 
-fn render_entry(store: &Store, version: &str) -> String {
-    let tpl = templates::load(store, "AGENTS.md.tpl");
+fn render_entry(store: &Store, version: &str) -> Result<String> {
+    let tpl = templates::load(store, "AGENTS.md.tpl")?;
     let mut vars = BTreeMap::new();
     vars.insert("version".to_string(), version.to_string());
     // 替换 frontmatter 中的版本占位（模板已含固定 version，这里兜底替换 athena-version 行）。
     let out = templates::render(&tpl, &vars);
-    out.replace(
+    Ok(out.replace(
         "athena-version: 0.1.0",
         &format!("athena-version: {version}"),
-    )
+    ))
 }
 
 fn write_if_absent(path: &Path, text: &str) -> Result<()> {
@@ -348,7 +411,7 @@ pub fn new_item(store: &Store, project: &str, slug: &str, kind: &str, reuse: boo
     vars.insert("project".into(), project.into());
     vars.insert("actor".into(), actor());
     vars.insert("now".into(), templates::now_iso());
-    let rendered = templates::render(&templates::load(store, tpl_name), &vars);
+    let rendered = templates::render(&templates::load(store, tpl_name)?, &vars);
     let mut doc = Document::parse(
         &store.status_dir(project, "pool").join(format!("{slug}.md")),
         &rendered,
@@ -453,7 +516,11 @@ pub fn validate(store: &Store, project: &str) -> Result<bool> {
     let items = list_items(store, project)?;
     let mut has_error = false;
     let mut total = 0usize;
-    println!("athena validate · 项目 {project} · 反证模式={mode}");
+    // 退出码三态写在首行（C21）：脚本只看 `0` 会把"有 ⚠"误读成"干净"。
+    println!(
+        "athena validate · 项目 {project} · 反证模式={mode}\n\
+         · 退出码：0=报告无 Error 级发现（可与任意多条 ⚠ 共存）｜1=命令自身失败｜2=报告含 Error 级发现"
+    );
     // 项目骨架完整性：`write projects/<名>/…` 也会顺手建出目录，只建一层的项目
     // 对"四目录在不在"的旧判据完全自洽，直到下一次 `new` 才 IO 错。
     let gaps = project_skeleton_gaps(store, project);
@@ -1084,6 +1151,10 @@ fn append_bytes(path: &Path, content: &str) -> Result<()> {
         f.write_all(b"\n")?;
     }
     f.write_all(content.as_bytes())?;
+    // 一次追加必须落成**完整行**：末字节补 \n，否则下一次追加会粘在同一行（C27 连带）。
+    if !content.ends_with('\n') {
+        f.write_all(b"\n")?;
+    }
     f.flush()?;
     Ok(())
 }
@@ -1268,21 +1339,49 @@ pub fn pitfall_search(store: &Store, project: &str, query: &str) -> Result<()> {
         };
         scanned += 1;
         let mut shown_header = false;
-        for (i, line) in content.lines().enumerate() {
+        for (i, raw) in content.lines().enumerate() {
+            let line = raw.trim();
+            // 只匹配坑条目（markdown 列表行）。标题、散文与 init 播种的占位示例都不算命中：
+            // 从前搜"全局"会命中文件标题，报出一条根本不存在的坑（C9 假阳性）。
+            if !is_pitfall_entry(line) {
+                continue;
+            }
             let low = line.to_lowercase();
             if tokens.iter().all(|t| low.contains(t)) {
                 if !shown_header {
                     println!("── {label}");
                     shown_header = true;
                 }
-                let body = strip_pitfall_tail_comment(line.trim_start_matches("- "));
+                let body = strip_pitfall_tail_comment(line.trim_start_matches(['-', '*']).trim_start());
                 println!("  L{}: {}", i + 1, body);
                 total += 1;
             }
         }
     }
-    println!("\n共 {total} 条命中（已扫 {scanned} 个含坑文件的来源；只读，未改动任何文件）。",);
+    println!(
+        "\n共 {total} 条命中（已扫 {scanned} 个含坑文件的来源；只匹配坑条目，标题/占位示例/散文不计；只读，未改动任何文件）。",
+    );
     Ok(())
+}
+
+/// 坑条目判据：markdown 列表行，且不是占位示例。
+fn is_pitfall_entry(line: &str) -> bool {
+    let line = line.trim();
+    (line.starts_with("- ") || line.starts_with("* ")) && !is_placeholder_entry(line)
+}
+
+/// 占位条目：init 播种的示例行（整条正文被括号包住，如 `- （每条对应一次真实踩坑）`）。
+/// 它不是真实踩坑记录，计入命中就成了一条凭空出现的"已经记过"。
+fn is_placeholder_entry(line: &str) -> bool {
+    let body = strip_pitfall_tail_comment(
+        line.trim_start_matches(['-', '*'])
+            .trim_start(),
+    );
+    let chars: Vec<char> = body.chars().collect();
+    match (chars.first(), chars.last()) {
+        (Some('（'), Some('）')) | (Some('('), Some(')')) => true,
+        _ => false,
+    }
 }
 
 /// 剥掉坑行尾部的 `<!-- 日期 · actor -->` 注释，只留可读正文。
@@ -1304,6 +1403,16 @@ fn strip_pitfall_tail_comment(line: &str) -> &str {
 pub fn notify(store: &Store, text: Option<&str>, clear: bool) -> Result<()> {
     require_initialized(store)?;
     let path = store.notices_md();
+    let has_text = text.is_some_and(|s| !s.trim().is_empty());
+    // 文本与 --clear 同给：从前**文本被静默丢弃**、只清空广播板还报 rc=0，
+    // 调用方以为广播成功了（C10）。与 pitfall 的互斥口径一致：二选一。
+    if clear && has_text {
+        return Err(Error::Conflict {
+            message: "`notify <文本>` 与 `--clear` 只能二选一：同给时文本会被丢弃、只剩清空。\n\
+                     = 要发通知就去掉 --clear；要清空就别带文本；两者都要请分两次跑。"
+                .into(),
+        });
+    }
     if clear {
         if path.exists() {
             std::fs::write(&path, NOTICE_HEADER)?;
@@ -1313,34 +1422,44 @@ pub fn notify(store: &Store, text: Option<&str>, clear: bool) -> Result<()> {
                 "notify: 清空全局通知",
                 &actor(),
             )?;
-            println!("✓ 已清空全局通知（notices.md）");
+            println!("✓ 已清空全局通知（notices.md）：这是**跨项目整块**广播板，不只清本项目的条目");
         } else {
             println!("· 无 notices.md，无需清空");
         }
         return Ok(());
     }
-    let text = text
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| Error::Conflict {
-            message: "需要通知文本，或用 `athena notify --clear` 清空广播板".into(),
-        })?;
+    let text = text.filter(|s| !s.trim().is_empty()).ok_or_else(|| {
+        Error::Conflict {
+            message: "需要通知文本，或用 `athena notify --clear` 清空广播板；文本以 `-` 开头时用 `notify -- \"…\"`".into(),
+        }
+    })?;
     if !path.exists() {
         std::fs::write(&path, NOTICE_HEADER)?;
     }
-    let line = format!(
-        "- {} · {}  <!-- {} -->",
-        templates::now_iso(),
-        text.trim(),
-        actor()
-    );
-    append_to_markdown_file(&path, &line)?;
+    // 多行正文从前只有首行能被渲染（顶部段过滤掉了不以 `- ` 开头的行），
+    // 而 CLI 照样打印"顶部可见"。现在首行成条、其余行缩进两格作续行，两边口径一致（C40）。
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    let stamp = templates::now_iso();
+    let actor = actor();
+    let mut block = format!("- {stamp} · {}  <!-- {actor} -->", lines[0]);
+    for cont in &lines[1..] {
+        block.push_str(&format!("\n  {cont}"));
+    }
+    append_to_markdown_file(&path, &block)?;
     Git::commit_paths(
         &store.root,
         &[srel(store, &path)],
-        &format!("notify: {}", truncate(text.trim(), 40)),
-        &actor(),
+        &format!("notify: {}", truncate(lines[0], 40)),
+        &actor,
     )?;
-    println!("✓ 已广播全局通知 → 各项目 `athena context` / `athena validate` 顶部可见");
+    println!(
+        "✓ 已广播全局通知（{} 行成 1 条）→ 各项目 `athena context` / `athena validate` 顶部可见",
+        lines.len()
+    );
     Ok(())
 }
 
@@ -1725,20 +1844,14 @@ fn move_to_status(
     Ok(new_path)
 }
 
+/// 追加一条（或一整段）markdown 列表项：坑、通知都走这里。
+/// 与 `append_path` 的散文分支同源，走 `O_APPEND` 直写而非"整读→拼接→整写"（C27）——
+/// 这两个文件同样是多 agent 共享的，RMW 会把别人刚追加的行覆盖掉。
 fn append_to_markdown_file(path: &Path, line: &str) -> Result<()> {
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p)?;
     }
-    let mut cur = std::fs::read_to_string(path).unwrap_or_default();
-    if !cur.is_empty() && !cur.ends_with('\n') {
-        cur.push('\n');
-    }
-    cur.push_str(line);
-    if !line.ends_with('\n') {
-        cur.push('\n');
-    }
-    std::fs::write(path, cur)?;
-    Ok(())
+    append_bytes(path, line)
 }
 
 fn clear_pending_entry(store: &Store, project: &str, slug: &str) {
@@ -2326,5 +2439,119 @@ mod tests {
             .unwrap()
             .contains("- [ ] exp · 跳过反证 · 理由：CI 无显示服务器"));
         let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    /// C23 + C39：init 补出台账文件；既有入口读不出时**整体拒绝**，不留半套项目。
+    #[test]
+    fn init_seeds_voice_and_refuses_unreadable_entry() {
+        let tag = std::process::id();
+        let root = std::env::temp_dir().join(format!("athena-f-voice-{tag}"));
+        let at = std::env::temp_dir().join(format!("athena-f-voice-at-{tag}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(&at).unwrap();
+        let store = Store { root: root.clone() };
+        init(&store, "demo", "AGENTS.md", &at, false, false).unwrap();
+        // 人话台账从前由不创建，`context` 的台账段因此静默缺席。
+        assert!(store.global_voice().is_file(), "init 须铺出全局 voice.md");
+        assert!(
+            store.project_voice("demo").is_file(),
+            "init 须铺出项目 voice.md"
+        );
+
+        // 非 UTF-8 的既有入口：不加 --force 必须拒，且**不建任何骨架**。
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::write(at.join("AGENTS.md"), [0u8, 159, 146, 128]).unwrap();
+        let err = init(&store, "demo", "AGENTS.md", &at, false, false);
+        assert!(err.is_err(), "读不出的既有入口必须拒，不得静默覆盖");
+        assert!(
+            !root.join("projects/demo").exists(),
+            "被拒的 init 不应留下半套项目：{err:?}",
+        );
+        // 显式 --force 才允许丢弃它。
+        init(&store, "demo", "AGENTS.md", &at, true, false).unwrap();
+        assert!(root.join("projects/demo/pool").is_dir());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    /// C22：状态根自身 `.git` 丢失后，写动作与 log 都必须拒绝——从前 git 向上借用宿主仓库，
+    /// 状态提交落进别人的仓、log 打印宿主代码史，而命令照样 rc=0。
+    #[test]
+    fn missing_state_git_refuses_writes_and_log() {
+        let tag = std::process::id();
+        let root = std::env::temp_dir().join(format!("athena-f-nogit-{tag}"));
+        let at = std::env::temp_dir().join(format!("athena-f-nogit-at-{tag}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(&at).unwrap();
+        let store = Store { root: root.clone() };
+        init(&store, "demo", "AGENTS.md", &at, false, false).unwrap();
+        std::fs::remove_dir_all(root.join(".git")).unwrap();
+
+        let err = write_path(&store, "demo", "projects/demo/scratch.md", "x\n", false)
+            .expect_err("失去 .git 的状态根不得再被写入（会寄生进宿主仓库）");
+        assert!(
+            format!("{err}").contains(".git"),
+            "报错须点名缺失的 .git，实际：{err}"
+        );
+        assert!(
+            std::fs::read_to_string(root.join("projects/demo/scratch.md")).is_err(),
+            "拒绝必须发生在写盘之前"
+        );
+        assert!(show_log(&store, 5).is_err(), "log 不得打印宿主仓库历史");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    /// C10 + C40：notify 的文本与 --clear 互斥；多行正文折成一条 + 缩进续行一起渲染。
+    #[test]
+    fn notify_rejects_clear_with_text_and_folds_lines() {
+        let tag = std::process::id();
+        let root = std::env::temp_dir().join(format!("athena-f-notify-{tag}"));
+        let at = std::env::temp_dir().join(format!("athena-f-notify-at-{tag}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(&at).unwrap();
+        let store = Store { root: root.clone() };
+        init(&store, "demo", "AGENTS.md", &at, false, false).unwrap();
+
+        let err = notify(&store, Some("要发的那条"), true).expect_err("同给必须拒");
+        assert!(
+            format!("{err}").contains("二选一"),
+            "报错须要求二选一，实际：{err}"
+        );
+        assert!(
+            !std::fs::read_to_string(store.notices_md())
+                .unwrap()
+                .contains("要发的那条"),
+            "被拒的 notify 不得留下半条记录"
+        );
+
+        notify(&store, Some("第一行\n第二行细节"), false).unwrap();
+        let raw = std::fs::read_to_string(store.notices_md()).unwrap();
+        assert!(raw.contains("-  · 第一行") || raw.contains("· 第一行"), "{raw}");
+        assert!(raw.contains("\n  第二行细节"), "续行须缩进两格：{raw}");
+        let section = context::notices_section(&store).expect("应有通知段");
+        assert!(
+            section.contains("第二行细节"),
+            "多行正文必须能在顶部被看到（否则'顶部可见'是假话）：{section}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    /// C9：搜索只认坑条目——标题、散文与 init 播种的占位示例都不算命中。
+    #[test]
+    fn pitfall_search_matches_only_real_entries() {
+        assert!(is_pitfall_entry("- 真实踩到的一次坑"));
+        assert!(is_pitfall_entry("  * 缩进的列表项也算"));
+        assert!(
+            !is_pitfall_entry("# 全局被坑（跨项目通用）"),
+            "标题命中就是凭空报出一条不存在的坑"
+        );
+        assert!(!is_pitfall_entry("- （每条对应一次真实踩坑）"), "占位示例不是记录");
+        assert!(!is_pitfall_entry("这段散文里含关键词"));
+        assert!(!is_pitfall_entry(""));
     }
 }

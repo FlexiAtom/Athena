@@ -160,15 +160,25 @@ fn push_file_section(s: &mut String, header: &str, path: &std::path::Path) {
     }
 }
 
-/// 从 `~/.Athena/notices.md` 抽取广播通知（以 `- ` 开头的行），渲染成顶部提醒段。
+/// 从 `~/.Athena/notices.md` 抽取广播通知，渲染成顶部提醒段。
+/// 一条 = 以 `- ` 开头的行 + 紧随其后缩进两格的续行（`notify` 写入多行正文就是这样落的）。
 /// 无内容（文件缺失或无通知行）→ None。通知是跨项目广播而非工作项，不进 list_items/validate 判定。
 pub fn notices_section(store: &Store) -> Option<String> {
     let text = std::fs::read_to_string(store.notices_md()).ok()?;
-    let lines: Vec<&str> = text
-        .lines()
-        .map(str::trim_start)
-        .filter(|l| l.starts_with("- ") && l.chars().count() > 2)
-        .collect();
+    let mut lines: Vec<&str> = Vec::new();
+    let mut in_bullet = false;
+    for raw in text.lines() {
+        let cont = raw.starts_with("  ") && !raw.trim().is_empty();
+        if cont && in_bullet {
+            lines.push(raw.trim_end());
+            continue;
+        }
+        let t = raw.trim_start();
+        in_bullet = t.starts_with("- ") && t.chars().count() > 2;
+        if in_bullet {
+            lines.push(t);
+        }
+    }
     if lines.is_empty() {
         return None;
     }

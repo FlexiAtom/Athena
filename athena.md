@@ -298,9 +298,11 @@ athena sys-export --max-lines 40        # 控制长度，Sys 必须短
 
 ```bash
 athena init <project> [--agents-file AGENTS.md]
-# 1. 在 ~/.Athena/projects/<name>/ 实例化骨架
-# 2. 复制内置 AGENTS.md.tpl → <project>/.AGENTS.md   （文件名可覆盖）
+# 1. 在 ~/.Athena/projects/<name>/ 实例化骨架（含 pitfalls.md / meta.md / 人话台账 voice.md，全局 voice.md 与广播板 notices.md 一并播种）
+# 2. 复制**当前生效的**入口模板 → <project>/.AGENTS.md （文件名可覆盖；④ overlay 优先于 ③ 二进制内置）
+#    ④ 或目标 ⑤ 读不出合法 UTF-8 → 整体拒绝，连骨架都不建（不静默回退内置、不覆盖、也不留半套项目）
 # 3. 不创建软链（避免暴露 ~/.Athena 绝对路径到项目树）
+# 只补缺失、绝不覆盖状态根里已存在的文件 → 发行升级永不自动触达已有项目，刷新 ⑤ 是手工动作
 ```
 
 **复制而非软链**的理由：软链会把这个文件的来源路径写进项目里，一旦被误提交就泄露本地目录结构；而复制出来的 `AGENTS.md` 是纯接口（无状态、可安全提交），删了也不损工作流。这与 §1.1「物理隔离」的原则一致——**接口可以进仓库，状态绝不进**。
@@ -1120,9 +1122,11 @@ athena quick <slug> -c "..." --promote            # 顺带推进一格
 ```
 初始化
   athena init <project> [--agents-file <名>] [--at <dir>] [--force] [--no-agents]
-                                   实例化 ~/.Athena 项目骨架；把**当前生效的**入口模板（状态根 overlay 优先于二进制内置）
+                                   实例化 ~/.Athena 项目骨架（含人话台账 voice.md，全局 voice.md 与广播板 notices.md 一起播种）；
+                                   把**当前生效的**入口模板（状态根 overlay 优先于二进制内置）
                                    复制到 --at（默认当前目录）。目标已有内容不同的入口文件时**整体原子拒绝**（既不建骨架
-                                   也不碰文件，退出码 1），须 --force 显式覆盖；--no-agents 只建骨架、完全不碰仓库
+                                   也不碰文件，退出码 1），须 --force 显式覆盖；--no-agents 只建骨架、完全不碰仓库；
+                                   模板或目标**读不出合法 UTF-8** 时同样整体拒绝（不静默回退内置、不覆盖、不留半套项目）
 
 工作项
   athena new <slug> [--kind proposal|draft|plan]
@@ -1141,12 +1145,16 @@ athena quick <slug> -c "..." --promote            # 顺带推进一格
 读写网关
   athena write <path> [-c|--content <文本>|--stdin] [--allow-empty]
                                     写入。注意：内容经 `Document::render` 归一化并重算 content-hash，**不是字节忠实覆盖**
-                                    （写 item doc 会丢弃未知 frontmatter 字段、覆写 updated-by/updated-at）
-  athena append <path> [-c|--content|--stdin]
+                                    （写 item doc 时未知 frontmatter 键**按行原样透传**，但 updated-by/updated-at 会被覆写）
+  athena append <path> [-c|--content|--stdin] [--allow-empty]
                                     追加（多 agent 共享状态根时的默认写侧姿势；整写覆盖是危险动作）
+                                    自动补行尾换行——否则两次 `-c "一行"` 会粘成同一行
   athena pitfall "<文本>" [--global] 记一条坑（项目级 / 全局）
-  athena pitfall --search "<词条>"   只读跨源搜索历史坑（与 --global 互斥：同给时 --global 被静默忽略）
+  athena pitfall --search "<词条>"   只读跨源搜索历史坑（与位置文本互斥：同给时明示"仅搜索、不记录"，
+                                    --global 一并失效并说明；**只命中坑条目**，标题/占位示例/散文不算）
   athena notify "<文本>" | --clear   全局广播板（~/.Athena/notices.md，各项目 context/validate 顶部可见）
+                                    多行正文折成**一条**通知（续行缩进 2 空格，一起送达）；文本以 `-` 开头
+                                    写 `notify -- "-…"`；`<文本>` 与 `--clear` 互斥（同给直接拒）
                                     --clear 清空的是**跨项目整块板**，多 agent 共享下应逐行手删
   （未实现）athena rm <rel-path>     本节原设计的"需显式确认删除"通道无实现：删文件走 git / 手工
 
@@ -1159,8 +1167,12 @@ athena quick <slug> -c "..." --promote            # 顺带推进一格
 AI 接口
   athena context                     输出 AI 上下文（协议摘要 + 树 + 术语 + 坑 + 人话台账，见 §7）
   athena validate                    自检报告（解析校验 + 剪枝/反证完整性，只报不改文件；**不读仓库根的入口副本**）
-  athena log [-n N]                  状态库的 git 提交流水（协议动作史，不是项目代码史）
+  athena log [-n N]                  状态库的 git 提交流水（协议动作史，不是项目代码史；**整库**，不按 --project 过滤）
   athena onerror                     AI 故障处置手册（源码位置 + /tmp 报告 + 处置原则）
+  （全局选项）--project <p>           只对**按项目**的命令有意义；`notify`/`log`/`onerror`/`term` 整库或跨项目生效，
+                                   带它们会被**直接拒绝**（从前是静默忽略，同一个参数两种语义）
+  （前置闸）状态根必须自带 .git        缺失时 git 会向上借用宿主仓库：`log` 打印的是**那个仓**的历史，每次写入把状态
+                                   提交进别人的仓且 rc=0。现在所有按项目的命令（含只读的 context/validate/log）先拒
   （未实现）athena sys-export / athena agents check
                                     §1.1/§2.1b 承诺的"入口导出与体检"命令未实现：入口漂移与膨胀目前无人自动检测
 ```
