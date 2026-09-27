@@ -199,12 +199,12 @@ athena init --sync --theirs     # 完全采用模板版本（丢弃本地改动�
 
 协议入口文件是**常驻上下文**（Agent 每次进入项目都读），因此它有一个别的文档没有的硬约束：**越大越失效**——内容膨胀会稀释指令预算、被模型忽略或截断（Red Hat 等实践建议控制在 ~150 行内）。而它又允许被 AI/人就地编辑（§1.1），所以膨胀与漂移是**必然发生**的，必须主动管：
 
-> **实现进度（别把设计当现状）**：本小节只有「③ 版本化」与「外置策略」的文本结构已落地（模板 frontmatter 带 `content-hash`，`athena init` 遇内容不同的既有入口会**拒绝静默覆盖**）。`agents check` / `agents diff` / `agents history` / `init --sync --dry-run` / `context <section>` **均未实现**：入口膨胀（`max_entry_lines` 恒不触发，代码里是死码）与各项目副本漂移目前**没有任何自动检测**。所以升级协议文本后必须人工走「刷 overlay → `init --force` 重发」两步（见 `AGENTS.md` 命令索引下方「入口文本五处落点」）。本节列的是**待办设计**，不是既有能力。
+> **实现进度（别把设计当现状）**：本小节只有「③ 版本化」与「外置策略」的文本结构已落地（模板 frontmatter 带 `content-hash`，`athena init` 遇内容不同的既有入口会**拒绝静默覆盖**）。`agents check`（仅剩 token 估算与各章节占比）/ `agents diff` / `agents history` / `init --sync --dry-run` / `context <section>` **均未实现**：入口膨胀已接上 `validate`（`max_entry_lines` 量 ④ 生效模板与当前目录 `AGENTS.md` 的行数，达到即 `[EntryBudget]` ⚠；token 估算无权威口径，`max_entry_tokens` 字段已删）；各项目副本漂移仍**没有任何自动检测**。所以升级协议文本后必须人工走「刷 overlay → `init --force` 重发」两步（见 `AGENTS.md` 命令索引下方「入口文本五处落点」）。本节列的是**待办设计**，不是既有能力。
 
 **① 检查（防膨胀于未然）**：
 
 ```bash
-athena agents check                    # （未实现）报告行数 / token 估算 / 各章节占比
+athena agents check                    # （未实现）报告 token 估算 / 各章节占比；行数已由 `validate` 的 [EntryBudget] 承担
 athena validate                        # （部分实现）自检报告；入口预算告警目前是死码，不触发
 ```
 
@@ -1175,7 +1175,7 @@ AI 接口
 3. **`pending` 反证未清算 → `complete` 拒绝**（协议门禁层唯一的硬阻塞，§5.1f；结构性防呆另见 §1.1 与 §3 的位置防呆边界）
 4. **`status` 字段与所在目录不一致 → 标红提示**（真值是目录，字段只是视图，§1）。
 
-第 1、2 条默认走"留痕 + 标红"而非拒绝；`[term.falsification].mode` 可设为 `"block"` 升级为拒绝。**实现现状**：模式解析是「`config.toml` 的 `behavior.falsification_mode` 优先，否则回落 `terms.local.toml`」，而 `terms.local.toml` 是状态根的**单一全局文件**——本节与模板注释里"项目级可覆盖"的说法**尚未实现**（键名拼错也会静默回落 `warn`，`validate` 一字不提）。降级理由见 §5.1e（反证降级为留痕）与 §11 反证实验 2 的失效边界分析。
+第 1、2 条默认走"留痕 + 标红"而非拒绝；`falsification_mode` 设为 `"block"` 升级为拒绝。**实现现状**：唯一真值是 `config.toml` 的 `[behavior].falsification_mode`，取值走白名单 `warn`/`block`（拼错或该文件语法坏 → 报错并拒绝执行受闸动作，不再静默回落）；`terms.local.toml` 的 `[term.falsification].mode` **已废弃**、不参与生效，残留行由 `athena term validate` 点名要求删除（不存在"两份开关谁赢看哪份坏了"的翻转），而 `terms.local.toml` 是状态根的**单一全局文件**——本节与模板注释里"项目级可覆盖"的说法**尚未实现**（键名拼错也会静默回落 `warn`，`validate` 一字不提）。降级理由见 §5.1e（反证降级为留痕）与 §11 反证实验 2 的失效边界分析。
 
 > 实现上：`athena-rules` 内置 `falsification_recorded.rs`，解析剪枝记录 Markdown，定位 `## 反证实验` 标题——检查"存在真实结果"**或**"存在 `--skip-falsification` 生成的 `### 待测` 段 + 具象理由"。前者缺失后者也无 → 报 `MissingFalsificationRecord`。校验对 `pool → working`（池→进行中）的转换**前置**执行（promote 先校验再移动），其余转换沿用 `terms.local.toml` 的 `require_fields`。**所有解析错误统一走 §9.1 的报错契约**。
 

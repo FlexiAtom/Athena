@@ -1,6 +1,12 @@
 # Athena 术语表（机读 · 驱动校验与行为，§2.1b）
 # 改这里 = 改协议规则，热加载生效、无需重编译。
 # 建议用 `athena term new/edit` 维护，避免手动改动导致结构错误。
+#
+# 合并语义（C37）：内置默认（= 本模板内容）是**底**，你写的这份文件**按表名覆盖**同名表、
+# 新表追加。删掉文件 = 全用内置默认；只写自己一条术语时其余内置术语照常生效（从前是整体
+# 取代，手写一份短文件就把 require_fields 驱动的机器覆盖静默清零）。粒度是**整表**：写了
+# [term.prune] 就是那一整张表说了算，未写的字段不会从内置补回来——这种"覆盖了但覆盖没了"
+# 由 `athena term validate` 点名，不会无声通过。
 
 quick_limit = 5          # 同一 slug 累计 quick 次数上限，超过强制完整剪枝（§5.4）
 
@@ -20,7 +26,9 @@ enforce_on = ["promote", "complete"]
 slug = "falsification"
 synonyms = ["反证", "证伪", "实证", "实机验证"]
 is_recorded = true        # 反证必须留痕（可关闭的是门禁，不是记录义务）
-mode = "warn"            # warn=标红不阻塞 | block=拒绝 promote（§5.1e）※ 本文件是状态根单一全局文件，无项目级覆盖；config.toml 的 behavior.falsification_mode 优先于此处
+# 反证模式开关**不在这里**（C35）：唯一真值是 config.toml 的 [behavior].falsification_mode。
+# 从前两处都有同名键、config 压死 terms，而 config 语法坏时被静默吞掉回落到这里——
+# 生效值随"哪份坏了"翻转。残留的 `mode = "..."` 键不会生效，`term validate` 会点名让你删。
 skip_field = "skip_reason"
 # 明文契约：反证表必须含以下"结果标签"列头之一，且其下至少一格非空。
 # validate 按标签定位列（不认列序号），改这里即改规则（§6b/§11 解析鲁棒性）。

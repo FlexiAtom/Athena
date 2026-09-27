@@ -371,11 +371,56 @@ pub fn new_item(store: &Store, project: &str, slug: &str, kind: &str, reuse: boo
 // 校验
 // ============================================================================
 
-fn effective_falsification_mode(store: &Store, terms: &TermsRegistry) -> String {
-    Config::load(store)
-        .ok()
-        .and_then(|c| c.behavior.falsification_mode)
-        .unwrap_or_else(|| terms.falsification_mode().to_string())
+/// 反证模式的**单一权威**是 `config.toml [behavior].falsification_mode`（C35/C7）。
+/// 从前它压死 `terms.local.toml` 的同名开关，且 config 语法坏时被 `.ok()` 吞掉、静默
+/// 回落到 terms 的值——生效模式随"哪份文件坏了"翻转。现在：解析失败直接报错（受闸动作
+/// 不执行），取值走白名单（拼错的 `nonsense` 从前按 warn 放行、只在首行原样打印）。
+fn effective_falsification_mode(cfg: &Config) -> Result<String> {
+    let mode = cfg.behavior.falsification_mode.as_deref().unwrap_or("warn");
+    if !matches!(mode, "warn" | "block") {
+        return Err(Error::Conflict {
+            message: format!(
+                "config.toml 的 falsification_mode = \"{mode}\" 不是合法取值。\n                     = 只认 warn（标红不阻塞）| block（拒绝推进）。\n                     = 唯一真值在 ~/.Athena/config.toml [behavior]；terms.local.toml 里的 mode 已废弃（`athena term validate` 会点名）。"
+            ),
+        });
+    }
+    Ok(mode.to_string())
+}
+
+/// 入口行数预算（C2/C26）。从前恒返回 None——"仓库根入口不在 ~/.Athena 里"是真限制，
+/// 但代价是 `max_entry_lines` 成了写在模板里的假保障（入口 83→100 行无人报警）。
+/// 现在量两份读得到的：**④ 生效模板**（`init` 铺出去的就是它）与**当前目录的入口副本**
+/// （⑤，你正在读的这份）。达到 `max_entry_lines` 即报；换名落地的副本仍要人工盯。
+fn entry_budget_warning(cfg: &Config, store: &Store) -> Vec<String> {
+    let Some(max) = cfg.behavior.max_entry_lines else {
+        return vec![];
+    };
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut candidates = vec![store.root.join("templates/AGENTS.md.tpl")];
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("AGENTS.md"));
+    }
+    for p in candidates {
+        if !p.is_file() {
+            continue;
+        }
+        let key = p.canonicalize().unwrap_or_else(|_| p.clone());
+        if !seen.insert(key) {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let n = raw.lines().count();
+        if n >= max {
+            out.push(format!(
+                "{n} 行 ≥ 预算 {max}：{}（§1.1 常驻上下文必须短；要加行先剪行）",
+                p.display()
+            ));
+        }
+    }
+    out
 }
 
 fn check_item(
@@ -402,7 +447,8 @@ pub fn validate(store: &Store, project: &str) -> Result<bool> {
     require_initialized(store)?;
     // 术语/配置先解析（§9.1 解析优先）。
     let terms = TermsRegistry::load(&store.terms_toml())?;
-    let mode = effective_falsification_mode(store, &terms);
+    let cfg = Config::load(store)?;
+    let mode = effective_falsification_mode(&cfg)?;
     let items = list_items(store, project)?;
     let mut has_error = false;
     let mut total = 0usize;
@@ -455,9 +501,13 @@ pub fn validate(store: &Store, project: &str) -> Result<bool> {
         );
     }
     // 入口文件膨胀检查（§1.1）。
-    if let Some(w) = entry_budget_warning(store, project) {
+    let budget = entry_budget_warning(&cfg, store);
+    if !budget.is_empty() {
         println!("\n── 协议入口预算");
-        println!("  ⚠ {w}");
+        for w in &budget {
+            println!("  {} [EntryBudget] {w}", Level::Warn.tag());
+        }
+        total += budget.len();
     }
     if total == 0 {
         println!("✓ 无缺失项，状态库自洽。");
@@ -467,14 +517,6 @@ pub fn validate(store: &Store, project: &str) -> Result<bool> {
     Ok(!has_error)
 }
 
-fn entry_budget_warning(store: &Store, _project: &str) -> Option<String> {
-    let cfg = Config::load(store).ok()?;
-    let max = cfg.behavior.max_entry_lines.unwrap_or(150);
-    // 项目仓库根的 AGENTS.md 不在 ~/.Athena，无法在此读取；此项留待 `agents check`（Phase 2）。
-    let _ = max;
-    None
-}
-
 // ============================================================================
 // promote / complete / freeze / community / resume / deepen / quick
 // ============================================================================
@@ -482,7 +524,7 @@ fn entry_budget_warning(store: &Store, _project: &str) -> Option<String> {
 pub fn promote(store: &Store, project: &str, slug: &str, skip: Option<&str>) -> Result<()> {
     require_initialized(store)?;
     let terms = TermsRegistry::load(&store.terms_toml())?;
-    let mode = effective_falsification_mode(store, &terms);
+    let mode = effective_falsification_mode(&Config::load(store)?)?;
     let it = need_item(store, project, slug)?;
 
     let target = match it.status {
@@ -690,6 +732,24 @@ pub fn complete(store: &Store, project: &str, slug: &str) -> Result<()> {
             ),
         });
     }
+    // C8：`enforce_on = ["promote","complete"]` 里的 complete 从未落地——剪枝章节校验只在
+    // promote 侧跑过。现在按声明的触发点真跑：发现全部打印，Error 级才拦（本类是 Warn，
+    // Athena 不阻止、只记录与提示；`term validate` 会把没实现的触发点点名）。
+    let terms = TermsRegistry::load(&store.terms_toml())?;
+    if terms.prune_enforce_on().iter().any(|a| a == "complete") {
+        let missing = rules::missing_prune_fields(&terms, &it.doc);
+        if missing.is_empty() {
+            println!("· 剪枝章节校验（enforce_on 含 complete）：必填章节齐");
+        } else {
+            println!("── 剪枝章节校验（enforce_on 含 complete）");
+            for m in &missing {
+                println!(
+                    "  {} [MissingPruneSection] 缺 `{m}`（不硬拦，但收口前该补的证据就这些）",
+                    Level::Warn.tag()
+                );
+            }
+        }
+    }
     let mut doc = it.doc.clone();
     doc.fm.outcome = Some(Outcome::Done);
     let src = it.path.clone();
@@ -755,8 +815,7 @@ pub fn community(store: &Store, project: &str, slug: &str) -> Result<()> {
     }
     // block 模式下 promote 会因未清算反证拒绝，而 community 此前不查——等于给入口
     // 宣布的唯一证据类硬闸留了一条更省事的逃生口。转社区同样是"在途"，一并受闸。
-    let terms = TermsRegistry::load(&store.terms_toml())?;
-    if effective_falsification_mode(store, &terms) == "block" {
+    if effective_falsification_mode(&Config::load(store)?)? == "block" {
         let hits = rules::pending_markers(it.doc.fm.falsification.as_deref(), &it.doc.body);
         if !hits.is_empty() {
             return Err(Error::Transition {
@@ -1249,8 +1308,20 @@ pub fn onerror(store: &Store) -> Result<()> {
 }
 
 pub fn term_list(store: &Store) -> Result<()> {
-    let terms = TermsRegistry::load(&store.terms_toml())?;
-    println!("术语（quick_limit={}）", terms.quick_limit);
+    let path = store.terms_toml();
+    let builtin = TermsRegistry::defaults();
+    let terms = TermsRegistry::load(&path)?;
+    let mode = effective_falsification_mode(&Config::load(store)?)?;
+    let over = if path.exists() {
+        format!("文件覆盖/新增，生效 {} 项", terms.terms.len())
+    } else {
+        format!("文件不存在，生效的是内置 {} 项", terms.terms.len())
+    };
+    println!(
+        "术语（quick_limit={}，反证模式={mode}〔唯一真值：config.toml [behavior]〕，内置 {} 项为底 + {over}）",
+        terms.quick_limit,
+        builtin.terms.len()
+    );
     for (slug, t) in &terms.terms {
         let syn = if t.synonyms.is_empty() {
             String::new()
@@ -1263,16 +1334,101 @@ pub fn term_list(store: &Store) -> Result<()> {
 }
 
 pub fn term_validate(store: &Store) -> Result<()> {
-    match TermsRegistry::load(&store.terms_toml()) {
-        Ok(t) => {
-            println!("✓ terms.local.toml 解析通过（{} 个术语）", t.terms.len());
-            Ok(())
-        }
-        Err(e) => {
-            println!("{e}");
-            Err(e)
+    use crate::term::{KNOWN_ROOT_KEYS, KNOWN_TERM_KEYS};
+    let path = store.terms_toml();
+    let builtin = TermsRegistry::defaults();
+    // C19：从前文件缺失也报"✓ 解析通过"（校的其实是内置默认），把"你没配"说成"你配对了"。
+    if !path.exists() {
+        println!(
+            "ℹ {} 不存在：当前生效的是**内置默认**（{} 个术语，quick_limit={}）。",
+            path.display(),
+            builtin.terms.len(),
+            builtin.quick_limit
+        );
+        println!("  · 要自定义术语就跑 `athena term new <slug>`；文件写好后**按表名**叠在内置默认之上，不是取代它。");
+        return Ok(());
+    }
+    let raw = std::fs::read_to_string(&path)?;
+    let value: toml::Value = toml::from_str(&raw).map_err(|e| Error::Toml {
+        path: path.display().to_string(),
+        message: e.to_string(),
+    })?;
+    let merged = TermsRegistry::load(&path)?;
+    let mut problems: Vec<String> = Vec::new();
+    if let Some(tbl) = value.as_table() {
+        for k in tbl.keys() {
+            if !KNOWN_ROOT_KEYS.contains(&k.as_str()) {
+                problems.push(format!("顶层未知键 `{k}`：CLI 不读它，只会静默忽略（拼错了？）"));
+            }
         }
     }
+    match value.get("term").and_then(|v| v.as_table()) {
+        None => problems.push("文件里没有 [term.*] 表：生效的全是内置默认".to_string()),
+        Some(t) => {
+            for (name, tv) in t {
+                let Some(body) = tv.as_table() else {
+                    problems.push(format!("[term.{name}] 不是表，CLI 读不到"));
+                    continue;
+                };
+                for k in body.keys() {
+                    if KNOWN_TERM_KEYS.contains(&k.as_str()) {
+                        continue;
+                    }
+                    if k == "mode" {
+                        problems.push(format!(
+                            "[term.{name}].mode 已废弃：反证模式的唯一真值是 config.toml 的 [behavior].falsification_mode。这一行不会生效，请删掉"
+                        ));
+                    } else {
+                        problems.push(format!("[term.{name}] 未知键 `{k}`：CLI 不读它，只会静默忽略（拼错了？）"));
+                    }
+                }
+                if let Some(s) = body.get("slug").and_then(|v| v.as_str()) {
+                    if s != name {
+                        problems.push(format!(
+                            "[term.{name}] 里 slug = \"{s}\" 与表名不符：CLI 按**表名**寻址，字段值只是给人看的"
+                        ));
+                    }
+                }
+                if let Some(arr) = body.get("enforce_on").and_then(|v| v.as_array()) {
+                    for a in arr {
+                        match a.as_str() {
+                            None => problems.push(format!("[term.{name}].enforce_on 含非字符串项")),
+                            Some(s) if !matches!(s, "promote" | "complete") => problems.push(format!(
+                                "[term.{name}].enforce_on = \"{s}\" 没有对应触发点：CLI 只在 promote/complete 前跑剪枝章节校验"
+                            )),
+                            Some(_) => {}
+                        }
+                    }
+                }
+                // 整表覆盖的代价要说出口：少了 require_fields，禁忌 2/4 的机器覆盖就归零。
+                if let Some(b) = builtin.terms.get(name) {
+                    if !b.require_fields.is_empty() && !body.contains_key("require_fields") {
+                        problems.push(format!(
+                            "[term.{name}] 覆盖了内置整表却没写 require_fields：内置那 {} 项必填章节校验就此归零（写 [] 是明确关闭，整行不写是被覆盖掉）",
+                            b.require_fields.len()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "✓ {} 解析通过：内置 {} 项为底，文件覆盖/新增 {} 项，生效 {} 项（quick_limit={}）",
+        path.display(),
+        builtin.terms.len(),
+        value.get("term").and_then(|v| v.as_table()).map(|t| t.len()).unwrap_or(0),
+        merged.terms.len(),
+        merged.quick_limit
+    );
+    for p in &problems {
+        println!("  {} [TermConfig] {p}", Level::Warn.tag());
+    }
+    if problems.is_empty() {
+        println!("  · 未知键 / 废弃键 / 非法枚举：无。");
+    } else {
+        println!("\n共 {} 条提示（不阻塞，但那条键根本没被读到）。", problems.len());
+    }
+    Ok(())
 }
 
 pub fn term_new(store: &Store, slug: &str, origin: Option<&str>) -> Result<()> {

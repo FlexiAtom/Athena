@@ -36,9 +36,10 @@ pub struct Term {
     pub origin: Option<String>,
     #[serde(default)]
     pub definition: Option<String>,
-    /// 反证留痕模式：warn（默认，标红不阻塞）| block（项目级可升，§5.1e/§6）。
-    #[serde(default)]
-    pub mode: Option<String>,
+    // 注：反证模式开关**不在这里**（C35）——从前 `[term.falsification].mode` 与
+    // `config.toml [behavior].falsification_mode` 两处并存，config 压死 terms，而 config
+    // 语法坏时错误被 `.ok()` 吞掉、回落到 terms 的值，生效值随"哪份坏了"翻转。
+    // 现在 config 是唯一权威；本文件里残留的 `mode` 键由 `term validate` 点名报废弃。
     #[serde(default)]
     pub skip_field: Option<String>,
     #[serde(default)]
@@ -58,42 +59,65 @@ struct Root {
     /// 快速通道累计上限（§5.4），默认 5。
     #[serde(default)]
     quick_limit: Option<usize>,
+    /// 顶层未知键（`term validate` 用来点名拼错/已废弃的键，C19）。
+    #[serde(default, flatten)]
+    extra: BTreeMap<String, toml::Value>,
 }
+
+/// `[term.*]` 里 CLI 真正读取的键。其余键（除已知的 `evidence_tokens`）一律由
+/// `term validate` 点名——从前未知键静默进 `extra` 再静默忽略，拼错的
+/// `require_field` 与已废弃的 `mode` 都不吭声。
+pub const KNOWN_TERM_KEYS: &[&str] = &[
+    "slug",
+    "synonyms",
+    "require_fields",
+    "enforce_on",
+    "origin",
+    "definition",
+    "skip_field",
+    "is_entry",
+    "is_recorded",
+    "schema_version",
+    "evidence_tokens",
+];
+/// 顶层已知键。
+pub const KNOWN_ROOT_KEYS: &[&str] = &["term", "quick_limit"];
 
 /// 术语注册表：每次执行热加载，不缓存到二进制（§2.1b「热加载」）。
 #[derive(Debug, Default)]
 pub struct TermsRegistry {
     pub terms: BTreeMap<String, Term>,
     pub quick_limit: usize,
+    /// 文件里声明过的顶层未知键（含已废弃的 `mode` 所在表之外的键）。
+    pub extra_root_keys: Vec<String>,
 }
 
 impl TermsRegistry {
-    /// 热加载。文件不存在时返回内置默认（保证 validate/context 在未初始化目录也不炸）。
+    /// 热加载：**内置默认为底，文件项按表名覆盖**（C37）。从前该文件一旦存在就整体
+    /// 取代内置默认——手写一个只含自己一条术语的文件，会把 `prune.require_fields`
+    /// 驱动的机器覆盖（禁忌 2/4）静默清零，validate 一字不提。
+    /// 覆盖是**整表**粒度：你写了 `[term.prune]` 就是那一整张表说了算，少了哪个字段
+    /// 默认值不会替你补——这种"覆盖了但覆盖没了"由 `term validate` 点名。
     pub fn load(path: &Path) -> Result<TermsRegistry> {
+        let mut reg = TermsRegistry::defaults();
         if !path.exists() {
-            return Ok(TermsRegistry::defaults());
+            return Ok(reg);
         }
         let raw = std::fs::read_to_string(path)?;
         let root: Root = toml::from_str(&raw).map_err(|e| Error::Toml {
             path: path.display().to_string(),
             message: e.to_string(),
         })?;
-        Ok(TermsRegistry {
-            terms: root.term,
-            quick_limit: root.quick_limit.unwrap_or(5),
-        })
+        for (slug, t) in root.term {
+            reg.terms.insert(slug, t);
+        }
+        reg.quick_limit = root.quick_limit.unwrap_or(reg.quick_limit);
+        reg.extra_root_keys = root.extra.keys().cloned().collect();
+        Ok(reg)
     }
 
     pub fn get(&self, slug: &str) -> Option<&Term> {
         self.terms.get(slug)
-    }
-
-    /// 反证章节标题（术语 synonyms/falsification）。
-    pub fn falsification_mode(&self) -> &str {
-        self.terms
-            .get("falsification")
-            .and_then(|t| t.mode.as_deref())
-            .unwrap_or("warn")
     }
 
     /// 反证明文契约允许的结果标签（§11 解析鲁棒性：按标签定位，不写死列序）。
@@ -136,13 +160,14 @@ impl TermsRegistry {
             .unwrap_or_default()
     }
 
-    /// 内置默认（首批 fidus 术语，§10 Phase 1b）。
-    fn defaults() -> TermsRegistry {
+    /// 内置默认（首批 fidus 术语，§10 Phase 1b）。`load` 用它作**底**再叠文件项。
+    pub fn defaults() -> TermsRegistry {
         let raw = include_str!("../templates/terms.local.toml.tpl");
         let root: Root = toml::from_str(raw).unwrap_or_default();
         TermsRegistry {
             terms: root.term,
             quick_limit: root.quick_limit.unwrap_or(5),
+            extra_root_keys: Vec::new(),
         }
     }
 }

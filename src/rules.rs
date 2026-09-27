@@ -50,7 +50,7 @@ pub struct ValidationCtx<'a> {
     /// 该文件实际所在的状态目录（pool/working/finished/community）。
     pub located_status: &'a str,
     pub terms: &'a TermsRegistry,
-    /// 生效的反证模式（config 覆盖 terms）：warn | block。
+    /// 生效的反证模式（唯一真值：config.toml [behavior].falsification_mode）：warn | block。
     pub falsification_mode: &'a str,
 }
 
@@ -165,6 +165,14 @@ impl Rule for FalsificationRecorded {
 }
 
 /// 术语驱动的必填章节（§6b）：require_fields 里的标题子串缺失即提示。
+pub fn missing_prune_fields(terms: &TermsRegistry, doc: &Document) -> Vec<String> {
+    terms
+        .prune_require_fields()
+        .into_iter()
+        .filter(|h| !doc.has_heading(h))
+        .collect()
+}
+
 struct RequiredFields;
 impl Rule for RequiredFields {
     fn id(&self) -> &'static str {
@@ -175,10 +183,8 @@ impl Rule for RequiredFields {
         if ctx.located_status == "finished" || ctx.located_status == "community" {
             return vec![];
         }
-        ctx.terms
-            .prune_require_fields()
+        missing_prune_fields(ctx.terms, ctx.doc)
             .into_iter()
-            .filter(|h| !ctx.doc.has_heading(h))
             .map(|h| Finding {
                 level: Level::Warn,
                 code: "MissingPruneSection",

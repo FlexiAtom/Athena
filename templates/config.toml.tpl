@@ -9,9 +9,12 @@ default_project = ""
 source_repo = ""
 
 [behavior]
-# 反证缺失时的模式：warn（标红不阻塞）| block（拒绝 promote）。
-# ※ 此项**优先于** terms.local.toml 的 [term.falsification].mode；"项目级可覆盖"尚未实现（不存在 projects/<p>/terms.local.toml 解析）。
+# 反证留痕缺失时的模式，取值**只认** warn（标红不阻塞）| block（拒绝推进）；拼错的值当场报错、
+# 受闸动作不执行（C35/C7）。这里是**唯一真值**：terms.local.toml 的 [term.falsification].mode
+# 已废弃，不再参与覆盖，也不会因某份文件坏了而翻转生效值。本文件语法坏同样直接报错（不回落）。
+# 项目级覆盖（projects/<p>/terms.local.toml）从未实现，也不在计划里——要按项目分档就换 ATHENA_HOME。
 falsification_mode = "warn"
-# 入口文件膨胀预算（§1.1）：**当前未生效**——仓库根入口不在 ~/.Athena 内，validate 的这项告警是死码（待 `agents check`，§1.1 实现进度）。
-max_entry_lines = 150
-max_entry_tokens = 2000
+# 入口文件膨胀预算（§1.1）：`validate` 量**生效模板**（~/.Athena/templates/AGENTS.md.tpl）与
+# **当前目录的 AGENTS.md** 两份行数，达到该值即 ⚠（C2/C26：从前这项是死码，入口 83→100 行无人报警）。
+# 出厂内置入口实测 100 行，故默认 110 = 再加 10 行就提醒你去剪枝而不是加行。
+max_entry_lines = 110
