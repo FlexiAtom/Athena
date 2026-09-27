@@ -20,7 +20,7 @@ enforce_on = ["promote", "complete"]
 slug = "falsification"
 synonyms = ["反证", "证伪", "实证", "实机验证"]
 is_recorded = true        # 反证必须留痕（可关闭的是门禁，不是记录义务）
-mode = "warn"            # warn=标红不阻塞；项目级可升 block（§5.1e）
+mode = "warn"            # warn=标红不阻塞 | block=拒绝 promote（§5.1e）※ 本文件是状态根单一全局文件，无项目级覆盖；config.toml 的 behavior.falsification_mode 优先于此处
 skip_field = "skip_reason"
 # 明文契约：反证表必须含以下"结果标签"列头之一，且其下至少一格非空。
 # validate 按标签定位列（不认列序号），改这里即改规则（§6b/§11 解析鲁棒性）。

@@ -9,8 +9,9 @@ default_project = ""
 source_repo = ""
 
 [behavior]
-# 反证缺失时的模式：warn（标红不阻塞）| block（拒绝 promote）。项目级可覆盖 terms.local.toml。
+# 反证缺失时的模式：warn（标红不阻塞）| block（拒绝 promote）。
+# ※ 此项**优先于** terms.local.toml 的 [term.falsification].mode；"项目级可覆盖"尚未实现（不存在 projects/<p>/terms.local.toml 解析）。
 falsification_mode = "warn"
-# 入口文件膨胀预算（§1.1）：超过则 validate 标黄提示精简/外置。
+# 入口文件膨胀预算（§1.1）：**当前未生效**——仓库根入口不在 ~/.Athena 内，validate 的这项告警是死码（待 `agents check`，§1.1 实现进度）。
 max_entry_lines = 150
 max_entry_tokens = 2000

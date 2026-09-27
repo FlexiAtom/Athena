@@ -199,11 +199,13 @@ athena init --sync --theirs     # 完全采用模板版本（丢弃本地改动�
 
 协议入口文件是**常驻上下文**（Agent 每次进入项目都读），因此它有一个别的文档没有的硬约束：**越大越失效**——内容膨胀会稀释指令预算、被模型忽略或截断（Red Hat 等实践建议控制在 ~150 行内）。而它又允许被 AI/人就地编辑（§1.1），所以膨胀与漂移是**必然发生**的，必须主动管：
 
+> **实现进度（别把设计当现状）**：本小节只有「③ 版本化」与「外置策略」的文本结构已落地（模板 frontmatter 带 `content-hash`，`athena init` 遇内容不同的既有入口会**拒绝静默覆盖**）。`agents check` / `agents diff` / `agents history` / `init --sync --dry-run` / `context <section>` **均未实现**：入口膨胀（`max_entry_lines` 恒不触发，代码里是死码）与各项目副本漂移目前**没有任何自动检测**。所以升级协议文本后必须人工走「刷 overlay → `init --force` 重发」两步（见 `AGENTS.md` 命令索引下方「入口文本五处落点」）。本节列的是**待办设计**，不是既有能力。
+
 **① 检查（防膨胀于未然）**：
 
 ```bash
-athena agents check                    # 报告行数 / token 估算 / 各章节占比
-athena validate                        # 超阈值 → 标红警告（默认 warn，可配 mode=block）
+athena agents check                    # （未实现）报告行数 / token 估算 / 各章节占比
+athena validate                        # （部分实现）自检报告；入口预算告警目前是死码，不触发
 ```
 
 - 内置预算：默认 `max_lines = 150`、`max_tokens ≈ 2000`（可在 `terms.local.toml` 调）
@@ -284,8 +286,8 @@ athena sys-export --max-lines 40        # 控制长度，Sys 必须短
 
 - 输出**核心是那句开场白**——"读 AGENTS.md 后向我提问以校准认知，然后正式开始工作"，附以极短摘要：身份 + 总纲（状态在 `~/.Athena`、项目零状态文件）+ 门禁 + "推进前先 `athena context` 再 `athena validate`"
 - **不含**具体术语、pitfalls、命令全文——那些按需拉取
-- 用户复制该片段到自己宿主的 Sys/全局规则即可；升级后用 `athena sys-export | diff -` 比对是否需要更新
-- `athena agents check` 同时检查：Sys 片段是否过长、Sys 版本是否与当前协议版本一致
+- 用户复制该片段到自己宿主的 Sys/全局规则即可；升级后比对是否需要更新（`athena sys-export` **未实现**，当前只能手工 diff 仓库 `AGENTS.md` 与自己宿主的规则文件）
+- `athena agents check` 同时检查：Sys 片段是否过长、Sys 版本是否与当前协议版本一致（**未实现**，见 §1.1 实现进度）
 
 > **一句话：Sys 只负责"提醒人说出开场白"，那句开场白负责"让 AI 读一次 AGENTS.md"，AGENTS.md 负责"把协议带进上下文续存到底"。协议不需要被反复加载，它只需要成功加载一次。**
 
@@ -730,12 +732,12 @@ athena term new gate --origin fidus
 athena write <rel-path> -c "内容"      # 创建/覆盖
 athena write <rel-path> --stdin        # 从 stdin 读（长内容）
 athena append <rel-path> -c "内容"     # 追加（坑/日志用）
-athena rm <rel-path>                   # 谨慎，需显式确认
+athena rm <rel-path>                   # （未实现）原设计的"需显式确认删除"通道：删文件请走 git / 手工
 ```
 
 **作用（都是"让 AI 更省力"，不是"管住 AI"）**：
 
-1. **位置防呆**：canonicalize + 白名单，帮 AI 别把状态写进项目仓库或别的项目
+1. **位置防呆**：canonicalize + 越界检查，帮 AI 别把状态写进项目仓库。**边界要说清**：拦得住的是 `..` 与绝对路径越出 `~/.Athena`；**跨项目**写入（`projects/<别人的项目>/…`）与不存在的项目名当前**不拦**（会照常落盘并 commit，`validate`/`context` 也看不见），所以"认清路径"仍是写侧的义务
 2. **自动留痕**：每次写自动 git commit，附 actor 标记——省得 AI 自己 commit
 3. **结构化校验**：渲染模板、校验 frontmatter、`terms.local.toml` 热加载生效——**顺手告诉 AI "你这份写得全不全"**
 
@@ -974,9 +976,9 @@ athena promote <slug> --skip-falsification="CI 环境无显示服务器，无法
    ```markdown
    - [ ] <slug> · <假设摘要> · 跳过理由：<具象理由> · 2026-09-19
    ```
-4. `validate` 对 `pending` 项**标红提醒**，但不阻塞（除非项目级 `mode = "block"`）
+4. `validate` 对 `pending` 项**标红提醒**，但不阻塞 promote（除非 `falsification_mode = "block"`；该模式的解析顺序见 §6「实现现状」——**没有项目级覆盖**）
 
-**待测项必须被清算**：`athena complete <slug>`（plan → done）前，该 slug 的所有 `pending` 反证必须被实际执行并填写真实结果，否则 `complete` 拒绝（这是**唯一保留的硬阻塞**，因为"方案已完成却仍基于未验证假设"是不可接受的）。
+**待测项必须被清算**：`athena complete <slug>`（plan → done）前，该 slug 的所有 `pending` 反证必须被实际执行并填写真实结果，否则 `complete` 拒绝（这是**协议门禁层唯一保留的硬阻塞**，因为"方案已完成却仍基于未验证假设"是不可接受的；另有几处**结构性防呆**同样会直接失败，但它们不属于协议门禁：`init` 遇内容不同的既有入口、路径越出状态根、slug 重名）。
 
 > 设计意图：反证从"门槛"降级为"留痕"，但**不消灭验证义务**——只是把验证时机从"promote 瞬间"放宽到"complete 之前"。`--skip-falsification` 登记的是债务，不是免责。
 
@@ -1117,47 +1119,63 @@ athena quick <slug> -c "..." --promote            # 顺带推进一格
 
 ```
 初始化
-  athena init <project> [--agents-file AGENTS.md]
-                                   实例化 ~/.Athena 骨架；复制 AGENTS.md 接口到项目根
+  athena init <project> [--agents-file <名>] [--at <dir>] [--force] [--no-agents]
+                                   实例化 ~/.Athena 项目骨架；把**当前生效的**入口模板（状态根 overlay 优先于二进制内置）
+                                   复制到 --at（默认当前目录）。目标已有内容不同的入口文件时**整体原子拒绝**（既不建骨架
+                                   也不碰文件，退出码 1），须 --force 显式覆盖；--no-agents 只建骨架、完全不碰仓库
 
 工作项
-  athena new <slug>                  用提案模板在 pool/ 创建（项目内必须唯一）
-  athena deepen <slug> --to draft|plan
-                                    【轴一】写深一层：提案→草案→方案（改 kind + 内容，文件不动）
-  athena promote <slug>              【轴二】推进一格（池→进行中→结束，不带 from/to）
-  athena quick <slug> -c "..."       小修复/配置更改快速通道：一行留痕，不走完整剪枝
-                                     [--promote 顺带推进；累计 N 次后强制完整剪枝]
-  athena complete <slug>             进行中→结束（outcome: done，要求 pending 反证已清算）
-  athena freeze <slug>               进行中→结束（outcome: frozen，毙掉需写原因）
-  athena resume <slug>               已冻结→进行中（要求重新剪枝）
-  athena community <slug>            放进 community/（社区互助：请人帮忙处理）
+  athena new <slug> [--kind proposal|draft|plan]
+                                   用提案模板在 pool/ 创建（项目内必须唯一）
+  athena deepen <slug> --to <kind> 【轴一】写深一层：kind = proposal|draft|plan（改 kind，文件不动；**单向不可降级**）
+  athena promote <slug>            【轴二】pool→working / community→working（不带 from/to；working→finished 用 complete）
+                                    [--skip-falsification="<具象理由>"] 登记待测（理由少于 6 字符被拒）
+  athena quick <slug> -c "..."     小修复/配置更改快速通道：一行留痕，不走完整剪枝
+                                    [--promote] 顺带推进；**限非 pool 项**；同一 slug 累计 quick_limit 次后强制完整剪枝
+  athena complete <slug>           进行中→结束（outcome: done；pending 未清算则**硬拒绝**，§5.1f）
+  athena freeze <slug> --reason "..."
+                                   非 finished→结束（outcome: frozen；原因必填，**此命令无 -c 短选项**）
+  athena resume <slug>             finished(done|frozen)→working（要求重新剪枝；complete 与 freeze 的共同逆操作）
+  athena community <slug>          放进 community/（社区互助：请人帮忙处理）
 
 读写网关
-  athena write <path> [-c|stdin]     写入
-  athena append <path> [-c|stdin]    追加
-  athena pitfall "..." [--global]    记坑（append 的专用形式）
+  athena write <path> [-c|--content <文本>|--stdin] [--allow-empty]
+                                    写入。注意：内容经 `Document::render` 归一化并重算 content-hash，**不是字节忠实覆盖**
+                                    （写 item doc 会丢弃未知 frontmatter 字段、覆写 updated-by/updated-at）
+  athena append <path> [-c|--content|--stdin]
+                                    追加（多 agent 共享状态根时的默认写侧姿势；整写覆盖是危险动作）
+  athena pitfall "<文本>" [--global] 记一条坑（项目级 / 全局）
+  athena pitfall --search "<词条>"   只读跨源搜索历史坑（与 --global 互斥：同给时 --global 被静默忽略）
+  athena notify "<文本>" | --clear   全局广播板（~/.Athena/notices.md，各项目 context/validate 顶部可见）
+                                    --clear 清空的是**跨项目整块板**，多 agent 共享下应逐行手删
+  （未实现）athena rm <rel-path>     本节原设计的"需显式确认删除"通道无实现：删文件走 git / 手工
 
 术语（随时增加，走流程）
   athena term list                   列出所有术语
   athena term new <slug> [--origin]  新增术语骨架（生成 toml + md 模板）
-  athena term show <slug>            显示定义与引用位置
   athena term validate               校验 terms.local.toml 语法
+                                    （**没有 `term show`**——本节原列的这条从未实现）
 
 AI 接口
-  athena context                     输出 AI 上下文（见 §7）
-  athena validate                    目录/剪枝完整性检查（规则来自术语 + 反证实验强制）
-  athena log                         git 历史
+  athena context                     输出 AI 上下文（协议摘要 + 树 + 术语 + 坑 + 人话台账，见 §7）
+  athena validate                    自检报告（解析校验 + 剪枝/反证完整性，只报不改文件；**不读仓库根的入口副本**）
+  athena log [-n N]                  状态库的 git 提交流水（协议动作史，不是项目代码史）
+  athena onerror                     AI 故障处置手册（源码位置 + /tmp 报告 + 处置原则）
+  （未实现）athena sys-export / athena agents check
+                                    §1.1/§2.1b 承诺的"入口导出与体检"命令未实现：入口漂移与膨胀目前无人自动检测
 ```
+
+> **本节与实现的关系**：命令面以 `athena <cmd> --help` 为准，本节是对齐后的设计描述。发现本节与 `--help` 分叉时，先复现、再判定该改哪一侧——历史上分叉的成因几乎都是"设计文本先写了能力、实现滞后"或"实现改了签名、文本没跟"（`index-cli-drift-audit` 记了一次全量对抗复验）。
 
 **`athena validate` 的核心规则**（其余校验由 `terms.local.toml` 驱动，可配置）：
 
 0. **解析校验优先（§9.1）**：先校验涉及文件是否**可被工具解析**——`terms.local.toml` 语法、frontmatter 分隔线、标题层级、必需字段。**检出即报错并中止，精确报错位置，绝不静默容错、绝不自动改文件**（因为允许人直接编辑，文件可能处于半坏状态）。解析通过后，才进入下面对业务规则的校验。
 1. **`pool/` 下任何文件，若文件内无 `## 反证实验` 章节 → 标红警告**（缺失即记录，不阻塞 promote；详见 §5.1e 降级说明）。
-2. **该章节必须含具象的跳过理由或至少一条真实 `结果`**——空泛的"已验证可行性 / 理论上可行"会在自检报告中显形。项目级 `mode = "block"` 时可升级为拒绝 promote。
-3. **`pending` 反证未清算 → `complete` 拒绝**（唯一保留的硬阻塞，§5.1f）。
+2. **该章节必须含具象的跳过理由或至少一条真实 `结果`**——空泛的"已验证可行性 / 理论上可行"会在自检报告中显形。`falsification_mode = "block"` 时可升级为拒绝 promote（解析顺序见下方「实现现状」）。
+3. **`pending` 反证未清算 → `complete` 拒绝**（协议门禁层唯一的硬阻塞，§5.1f；结构性防呆另见 §1.1 与 §3 的位置防呆边界）
 4. **`status` 字段与所在目录不一致 → 标红提示**（真值是目录，字段只是视图，§1）。
 
-第 1、2 条默认走"留痕 + 标红"而非拒绝；`[term.falsification].mode` 可在项目级设为 `"block"`。理由见 §5.1e（反证降级为留痕）与 §11 反证实验 2 的失效边界分析。
+第 1、2 条默认走"留痕 + 标红"而非拒绝；`[term.falsification].mode` 可设为 `"block"` 升级为拒绝。**实现现状**：模式解析是「`config.toml` 的 `behavior.falsification_mode` 优先，否则回落 `terms.local.toml`」，而 `terms.local.toml` 是状态根的**单一全局文件**——本节与模板注释里"项目级可覆盖"的说法**尚未实现**（键名拼错也会静默回落 `warn`，`validate` 一字不提）。降级理由见 §5.1e（反证降级为留痕）与 §11 反证实验 2 的失效边界分析。
 
 > 实现上：`athena-rules` 内置 `falsification_recorded.rs`，解析剪枝记录 Markdown，定位 `## 反证实验` 标题——检查"存在真实结果"**或**"存在 `--skip-falsification` 生成的 `### 待测` 段 + 具象理由"。前者缺失后者也无 → 报 `MissingFalsificationRecord`。校验对 `pool → working`（池→进行中）的转换**前置**执行（promote 先校验再移动），其余转换沿用 `terms.local.toml` 的 `require_fields`。**所有解析错误统一走 §9.1 的报错契约**。
 
@@ -1529,7 +1547,7 @@ $ find /usr/share/{wayland,wayland-protocols,wlr-protocols} -name '*.xml' | wc -
 
 | 角度 | 反证设计 | 预期若假设错 | 真实结果 |
 |---|---|---|---|
-| 留痕缺失是否可见 | 手动创建 `pool/x.prune.md` 留空 → `athena validate` | 标红警告并记录缺失 | **设计如此**（§6 validate 默认 warn，项目级 `mode=block` 时可拒绝） |
+| 留痕缺失是否可见 | 手动创建 `pool/x.prune.md` 留空 → `athena validate` | 标红警告并记录缺失 | **设计如此**（§6 validate 默认 warn；升 `falsification_mode = "block"` 才可拒绝——注意**无项目级覆盖**） |
 | 协议解析是否鲁棒 | 标题写成 `## 反证`（缺"实验"） | 解析失败漏检 | 需明确匹配策略：按标题前缀 + 首个代码块，**Phase 0 单测覆盖** |
 | 人工编辑是否会破坏解析 | 人直接改 `terms.local.toml` 少个字符 | 工具静默容错或崩坏 | **设计如此（§9.1）**：操作前校验、报错交人修、绝不自动改文件 |
 | "不可关闭"是否过度？ | 离线/无显示器环境无法实测 | 硬规则挡住合理场景 | **待定**：需 `--skip-falsification` 逃生？→ 反方证据成立，见下 |
