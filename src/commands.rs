@@ -198,7 +198,7 @@ pub fn init(
                 Err(_) => {
                     return Err(Error::Conflict {
                         message: format!(
-                            "`{}` 读不出（不是合法 UTF-8），无法与模板比对 → 拒绝：不覆盖、也不建任何骨架。\n\
+                            "`{}` 读不出（不是合法 UTF-8），无法与模板比对 → 不覆盖、也不建任何骨架。\n\
                              = 确认要丢弃它：加 `--force`；只想补状态骨架：加 `--no-agents`。",
                             target.display()
                         ),
@@ -209,7 +209,7 @@ pub fn init(
             Err(e) => {
                 return Err(Error::Conflict {
                     message: format!(
-                        "`{}` 存在但读不出来（{e}）→ 拒绝：不覆盖、也不建任何骨架（免留半套项目）。\n\
+                        "`{}` 存在但读不出来（{e}）→ 不覆盖、也不建任何骨架（免留半套项目）。\n\
                          = 先修好该文件的可读性；只补状态骨架加 `--no-agents`；确认要整份替换加 `--force`。",
                         target.display()
                     ),
@@ -224,7 +224,7 @@ pub fn init(
         Some(_) => {
             return Err(Error::Conflict {
                 message: format!(
-                    "`{}` 已存在且与 Athena 模板不同，拒绝覆盖。\n\
+                    "`{}` 已存在且与 Athena 模板不同（不会覆盖它）。\n\
                      = 想覆盖并初始化：加 `--force`；只建状态骨架、不碰该文件：加 `--no-agents`。\n\
                      = 本次未创建任何状态、未改动任何文件（§1.1：接口可进仓库，但不静默改用户仓库）。",
                     target.display()
@@ -1186,7 +1186,7 @@ pub fn write_path(
     if !allow_empty && content.trim().is_empty() {
         return Err(Error::Conflict {
             message: format!(
-                "拒绝用空内容写入 {rel}（会清空既有内容）。确需清空请加 --allow-empty（§1.2）"
+                "空内容会清空既有内容 {rel}。确需清空请加 --allow-empty（§1.2）"
             ),
         });
     }
@@ -1232,7 +1232,7 @@ pub fn append_path(
     if !allow_empty && content.trim().is_empty() {
         return Err(Error::Conflict {
             message: format!(
-                "拒绝用空内容追加到 {rel}（只会留下无意义提交，文件不存在时还会新建空文件）。确需如此请加 --allow-empty（§1.2）"
+                "空内容追加到 {rel} 只会留下无意义提交（文件不存在时还会新建空文件）。确需如此请加 --allow-empty（§1.2）"
             ),
         });
     }

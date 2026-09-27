@@ -47,7 +47,8 @@ pub enum Error {
     Transition {
         message: String,
     },
-    /// 目标文件已存在且内容不同，需显式 --force/--no-agents 才继续（防呆，§1.1 安装语义）。
+    /// 硬拒绝：照做会静默改动或丢弃已有内容（覆盖、清空、并发抢占、落点与内容不一致），
+    /// 或参数/配置的组合不成立（互斥同给、取值非法）。处置指引一律写在 message 里。
     Conflict {
         message: String,
     },
@@ -84,7 +85,7 @@ impl fmt::Display for Error {
             }
             Error::Slug { slug, message } => write!(f, "工作项 `{slug}`: {message}"),
             Error::Transition { message } => write!(f, "非法转换: {message}"),
-            Error::Conflict { message } => write!(f, "拒绝覆盖: {message}"),
+            Error::Conflict { message } => write!(f, "拒绝: {message}"),
             Error::Git { message } => write!(f, "git 错误: {message}"),
             Error::Template { message } => write!(f, "生效模板不可用: {message}"),
         }
