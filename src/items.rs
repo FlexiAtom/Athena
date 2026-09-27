@@ -107,12 +107,28 @@ pub fn find_item(store: &Store, project: &str, slug: &str) -> Result<Option<Item
             hits.push(Item { path, status, doc });
         }
     }
-    match hits.len() {
+    let n = hits.len();
+    match n {
         0 => Ok(None),
         1 => Ok(Some(hits.pop().unwrap())),
-        n => Err(Error::Slug {
-            slug: slug.into(),
-            message: format!("在 {n} 个状态目录中重复存在，违反项目内唯一性，请手动消歧"),
-        }),
+        _ => {
+            // 2+ 命中只可能是"finished/ 的历史项 + 在途新项"（`new --reuse-finished`
+            // 的合法后果）。按 slug 的动作要的是在途那份；两份都沉在 finished/ 才真需要
+            // 人工消歧——那时任何寻址都不该猜。
+            let mut inflight = hits.into_iter().filter(|i| i.status != "finished");
+            match (inflight.next(), inflight.next()) {
+                (Some(it), None) => {
+                    println!(
+                        "⚠ {slug} 在 finished/ 另有一份历史项；按 slug 的动作指向在途那份（{}/）。",
+                        it.status
+                    );
+                    Ok(Some(it))
+                }
+                _ => Err(Error::Slug {
+                    slug: slug.into(),
+                    message: format!("在 {n} 个状态目录中重复存在，违反项目内唯一性，请手动消歧"),
+                }),
+            }
+        }
     }
 }

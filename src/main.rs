@@ -32,8 +32,27 @@ mod vcs;
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use store::Store;
+
+/// `new --kind` 的取值白名单。此前是自由字符串：`"plan "`（带空格）静默收下，
+/// frontmatter 写 `kind: "plan "` 而正文仍是提案骨架，clap 无从拦截。
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum KindArg {
+    Proposal,
+    Draft,
+    Plan,
+}
+
+impl KindArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            KindArg::Proposal => "proposal",
+            KindArg::Draft => "draft",
+            KindArg::Plan => "plan",
+        }
+    }
+}
 
 /// Athena —— 面向 AI Agent 的工作协议（协议的执行边界）。
 /// 目录即状态，文档即记忆；靠说服生效，不靠强制。
@@ -72,8 +91,11 @@ enum Cmd {
     /// 用提案模板在 pool/ 创建（项目内唯一）
     New {
         slug: String,
-        #[arg(long, default_value = "proposal")]
-        kind: String,
+        #[arg(long, value_enum, default_value = "proposal")]
+        kind: KindArg,
+        /// 同名项只在 finished/ 时才建（默认拒绝：同名两份会让该 slug 的状态动作全部 exit 1）
+        #[arg(long)]
+        reuse_finished: bool,
     },
     /// 轴一：原地深化文档类型（改 kind，文件不动）
     Deepen {
@@ -126,6 +148,9 @@ enum Cmd {
         content: Option<String>,
         #[arg(long)]
         stdin: bool,
+        /// 允许追加空/纯空白内容（默认与 write 一样拒绝）
+        #[arg(long)]
+        allow_empty: bool,
     },
     /// 记一条坑（或加 --search 只读跨源搜索坑）
     Pitfall {
@@ -224,9 +249,14 @@ fn main() {
                 commands::init(&store, new_project, agents_file, &at, *force, *no_agents)
                     .map_err(anyhow::Error::from)?;
             }
-            Cmd::New { slug, kind } => {
+            Cmd::New {
+                slug,
+                kind,
+                reuse_finished,
+            } => {
                 let p = resolve(cli.project.as_deref());
-                commands::new_item(&store, &p, slug, kind).map_err(anyhow::Error::from)?;
+                commands::new_item(&store, &p, slug, kind.as_str(), *reuse_finished)
+                    .map_err(anyhow::Error::from)?;
             }
             Cmd::Deepen { slug, to } => {
                 let p = resolve(cli.project.as_deref());
@@ -277,10 +307,12 @@ fn main() {
                 path,
                 content,
                 stdin,
+                allow_empty,
             } => {
                 let c = read_content(content.clone(), *stdin)?;
                 let p = resolve(cli.project.as_deref());
-                commands::append_path(&store, &p, path, &c).map_err(anyhow::Error::from)?;
+                commands::append_path(&store, &p, path, &c, *allow_empty)
+                    .map_err(anyhow::Error::from)?;
             }
             Cmd::Pitfall {
                 text,

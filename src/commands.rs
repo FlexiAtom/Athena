@@ -309,7 +309,7 @@ fn write_if_absent(path: &Path, text: &str) -> Result<()> {
 // new
 // ============================================================================
 
-pub fn new_item(store: &Store, project: &str, slug: &str, kind: &str) -> Result<()> {
+pub fn new_item(store: &Store, project: &str, slug: &str, kind: &str, reuse: bool) -> Result<()> {
     require_initialized(store)?;
     validate_slug(slug)?;
     // 唯一性：任意进行中状态目录不得同名（§5.2a）。
@@ -324,7 +324,20 @@ pub fn new_item(store: &Store, project: &str, slug: &str, kind: &str) -> Result<
                 ),
             });
         }
-        println!("⚠ 存在同名历史项（finished），确认复用：新项仍将在 pool/ 创建。");
+        // 同名的 finished 项不是"警告后照建"的理由：新项落 pool/ 后同一 slug 在两个
+        // 状态目录各有一份，而 find_item 对 2+ 命中一律 exit 1 → 该 slug 的
+        // promote/complete/resume/freeze/deepen 全部瘫掉，validate 却只列一行且 exit 0。
+        if !reuse {
+            return Err(Error::Slug {
+                slug: slug.into(),
+                message: format!(
+                    "同名历史项已存在于 {}（kind: {}）。\n                     = 想留新项：换个 slug；\n                     = 确要同名（新项落 pool/，旧项仅作历史）：加 `--reuse-finished`。\n                     = 想把旧项捞回在途：`athena resume {slug}`，别再新建。",
+                    srel(store, &it.path).display(),
+                    it.doc.fm.kind.as_str()
+                ),
+            });
+        }
+        println!("⚠ 同名 finished 项保留为历史，新项将在 pool/ 创建（此后按 slug 的动作只看这一份）。");
     }
     let tpl_name = templates::template_for_kind(kind);
     let mut vars = BTreeMap::new();
@@ -819,6 +832,21 @@ pub fn deepen(store: &Store, project: &str, slug: &str, to: &str) -> Result<()> 
         }
     };
     let it = need_item(store, project, slug)?;
+    // 轴一不该由"已结束/已放出去"的项触发：那两项的 kind 是历史快照，改它等于改写历史，
+    // 而 finished/community 里 validate 的剪枝检查全停，改完也没人复核。
+    if matches!(it.status, "finished" | "community") {
+        let back = if it.status == "finished" {
+            format!("athena resume {slug}")
+        } else {
+            format!("athena promote {slug}")
+        };
+        return Err(Error::Transition {
+            message: format!(
+                "deepen 不作用于 {}——那里的 kind 是历史快照，而 finished/community 里剪枝检查全停，改完无人复核。\n                     = 要重开先回在途：`{back}`。",
+                it.status
+            ),
+        });
+    }
     let order = [Kind::Proposal, Kind::Draft, Kind::Plan];
     let from_i = order.iter().position(|k| *k == it.doc.fm.kind).unwrap_or(0);
     let to_i = order.iter().position(|k| *k == kind).unwrap();
@@ -827,8 +855,18 @@ pub fn deepen(store: &Store, project: &str, slug: &str, to: &str) -> Result<()> 
             message: "不能反向降级文档类型（提案→草案→方案 单向深化）".into(),
         });
     }
+    if to_i == from_i {
+        // 同值过去也重写文件并新建一条状态库提交：看起来像做过事，实际什么都没变。
+        println!(
+            "· {slug} 已是 {}，kind 未变——不落盘、不提交（deepen 只单向，降级请改文件后 `git revert`）",
+            kind.as_str()
+        );
+        return Ok(());
+    }
     let mut doc = it.doc.clone();
     doc.fm.kind = kind;
+    doc.fm.updated_at = templates::now_iso();
+    doc.fm.updated_by = actor();
     doc.write(&it.path)?;
     Git::commit_paths(
         &store.root,
@@ -868,6 +906,8 @@ pub fn quick(store: &Store, project: &str, slug: &str, msg: &str, do_promote: bo
     let mut doc = it.doc.clone();
     let line = format!("- [{}] quick: {msg} — {}", templates::now_iso(), actor());
     doc.body = append_to_section(&doc.body, "决策日志", &line);
+    doc.fm.updated_at = templates::now_iso();
+    doc.fm.updated_by = actor();
     doc.write(&it.path)?;
     Git::commit_paths(
         &store.root,
@@ -922,6 +962,7 @@ pub fn write_path(
     // 其它路径（pitfalls.md / terms / scratch 等）仍是原始状态文件网关（§1.1）。
     let final_content = if is_item_doc_rel(&rel) {
         let mut doc = Document::parse(&path, content)?;
+        check_item_doc_placement(&rel, &doc.fm)?;
         doc.fm.updated_by = actor();
         doc.fm.updated_at = templates::now_iso();
         doc.render() // 重算 content-hash（§13.2 第 2 层）
@@ -939,13 +980,27 @@ pub fn write_path(
     Ok(())
 }
 
-pub fn append_path(store: &Store, project: &str, rel: &str, content: &str) -> Result<()> {
+pub fn append_path(
+    store: &Store,
+    project: &str,
+    rel: &str,
+    content: &str,
+    allow_empty: bool,
+) -> Result<()> {
     require_initialized(store)?;
     let (rel, rerouted) = route_state_rel(rel, project)?;
     if rerouted {
         println!("· 相对状态目录路径已归位 → {rel}（依项目 {project}；欲写顶层请改用显式路径）");
     }
     ensure_project_target_exists(store, &rel)?;
+    // 与 write 对称：空/纯空白默认拒（过去空内容 rc=0，还能凭空建出 0 字节文件并提交）。
+    if !allow_empty && content.trim().is_empty() {
+        return Err(Error::Conflict {
+            message: format!(
+                "拒绝用空内容追加到 {rel}（只会留下无意义提交，文件不存在时还会新建空文件）。确需如此请加 --allow-empty（§1.2）"
+            ),
+        });
+    }
     let path = store.resolve_rel(&rel)?;
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p)?;
@@ -956,8 +1011,10 @@ pub fn append_path(store: &Store, project: &str, rel: &str, content: &str) -> Re
     }
     cur.push_str(content);
     // 工作项文档：追加进正文后重算 hash 与 updated-*（避免 content-hash 悬空）；坏 frontmatter 拒绝。
+    // 落点一致性也要查：append 能凭空建出 item doc，不查就成了绕过 `write` 那道闸的后门。
     let final_content = if is_item_doc_rel(&rel) {
         let mut doc = Document::parse(&path, &cur)?;
+        check_item_doc_placement(&rel, &doc.fm)?;
         doc.fm.updated_by = actor();
         doc.fm.updated_at = templates::now_iso();
         doc.render()
@@ -1306,6 +1363,42 @@ fn route_state_rel(rel: &str, project: &str) -> Result<(String, bool)> {
     }
 }
 
+/// 写 item doc 时查 frontmatter 与**落点路径**的一致性（`project:`/`status:`/`slug:`）。
+/// 过去只查 frontmatter 能不能解析：三者任一种漂移都能 rc=0 落盘并自动提交，事后
+/// `validate` 也只补标 status 与 slug 两类，`project` 漂移从头到尾无人报——于是
+/// "写在 a 项目、声明自己是 b 项目"的文档既进不了 b 的 context，也不受 a 的清算。
+fn check_item_doc_placement(rel: &str, fm: &Frontmatter) -> Result<()> {
+    let seg: Vec<&str> = rel
+        .split(['/', '\\'])
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
+    // 调用方已用 is_item_doc_rel 确认形状为 projects/<p>/<status>/<name>.md。
+    let (project, status, file) = (seg[1], seg[2], seg[3]);
+    let stem = file.trim_end_matches(".md");
+    let mut drift = Vec::new();
+    if fm.project != project {
+        drift.push(format!(
+            "`project: {}` ≠ 路径所属项目 `{project}`（该文档既不进 {project} 的 context，也不受其清算）",
+            fm.project
+        ));
+    }
+    if fm.status != status {
+        drift.push(format!("`status: {}` ≠ 所在目录 `{status}`（目录才是状态真值）", fm.status));
+    }
+    if fm.slug != stem {
+        drift.push(format!("`slug: {}` ≠ 文件名 `{stem}`", fm.slug));
+    }
+    if !drift.is_empty() {
+        return Err(Error::Conflict {
+            message: format!(
+                "工作项与落点不一致：{rel}\n                 - {}\n                 = 改 frontmatter 或换路径，二者取其一。",
+                drift.join("\n                 - ")
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// `write`/`append` 只允许落到**已存在**的项目目录里。项目骨架由 `init` 建立；
 /// 顺手 `create_dir_all` 会造出半套项目（validate 只看四目录在不在，故报"自洽"，
 /// 直到下一次 `new` 才 IO 错），把"项目已就绪"的证据变成假阴性。
@@ -1346,6 +1439,16 @@ fn move_to_status(
     doc.fm.updated_at = templates::now_iso();
     doc.fm.updated_by = actor();
     let new_path = store.status_dir(project, target).join(format!("{slug}.md"));
+    // 目标已存在 = 这一"移动"其实是**覆盖**：`--reuse-finished` 造出的同名项走完
+    // complete 时，会把 finished/<slug>.md 那份历史无痕换掉。宁可停在这里。
+    if new_path.exists() && new_path != old_path {
+        return Err(Error::Conflict {
+            message: format!(
+                "目标已存在 {}，移动会覆盖那份历史。先给其中一份换名/换 slug，再推进。",
+                srel(store, &new_path).display()
+            ),
+        });
+    }
     // content-hash 在 render 时更新为新正文快照（§13.2 第 2 层）。
     let _ = content_hash(&doc.body);
     doc.write(&new_path)?;
@@ -1456,12 +1559,24 @@ fn insert_after_section(body: &str, heading: &str, block: &str) -> String {
     append_to_section(body, heading, block.trim_end())
 }
 
-fn count_quick_lines(body: &str) -> usize {
-    append_marker_count(body, "] quick:")
+/// 配额口径：**只数留痕行本身**（`- [<时间>] quick: … — <actor>`）。
+/// 过去的口径是"含 `] quick:` 子串的行数"，于是出厂提案模板里那行示例注释先预占 1
+/// （上限 5 实给 4），正文里任何散文/引述写过该子串也照占额度——而 CLI 无任何清零手段。
+fn is_quick_ledger_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.starts_with("<!--") {
+        return false;
+    }
+    // `-` 与 `[` 之间的空白容忍：手工重排过的留痕仍算数（漏数等于放宽防护）。
+    let after_dash = match t.strip_prefix('-') {
+        Some(rest) => rest.trim_start(),
+        None => return false,
+    };
+    after_dash.starts_with('[') && after_dash.contains("] quick:")
 }
 
-fn append_marker_count(body: &str, marker: &str) -> usize {
-    body.lines().filter(|l| l.contains(marker)).count()
+fn count_quick_lines(body: &str) -> usize {
+    body.lines().filter(|l| is_quick_ledger_line(l)).count()
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -1767,6 +1882,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&at);
     }
 
+    /// 回归（C3）：配额口径过去是"含 `] quick:` 子串的行数"——出厂模板那行示例注释
+    /// 先预占 1（上限 5 实给 4），正文里引述/散文写过该子串也照占，且无从清零。
+    #[test]
+    fn quick_quota_counts_only_ledger_lines() {
+        let body = "<!-- 快速通道（athena quick）的一行留痕由 CLI 自动追加在此 -->\n\
+                    示例格式长这样：- [时间] quick: ... — <session>\n\
+                    - [2026-01-01T00:00:00+08:00] quick: 真留痕 — pid-1\n\
+                    <!-- - [x] quick: 注释里的不算 -->\n\
+                    -   [2026-01-02T00:00:00+08:00] quick: 第二条 — pid-2\n";
+        assert_eq!(count_quick_lines(body), 2, "只应数两条真留痕：{body:?}");
+        // 缩进的留痕行仍是留痕。
+        assert_eq!(count_quick_lines("  - [t] quick: x — a"), 1);
+    }
+
+    /// 回归（C33）：写 item doc 时 frontmatter 与落点三种漂移都能 rc=0 落盘，
+    /// 事后 validate 只补标 status/slug，`project` 漂移无人报。
+    #[test]
+    fn write_checks_frontmatter_against_placement() {
+        let good = batch_b_doc("body", false); // slug exp / project demo / status working
+        assert!(check_item_doc_placement("projects/demo/working/exp.md", &good.fm).is_ok());
+        // 三种漂移各拒一次，且文案点名是哪一处。
+        let mut p = good.clone();
+        p.fm.project = "other".into();
+        let e = check_item_doc_placement("projects/demo/working/exp.md", &p.fm).unwrap_err();
+        assert!(e.to_string().contains("project:"), "{e}");
+        let mut s = good.clone();
+        s.fm.status = "pool".into();
+        assert!(check_item_doc_placement("projects/demo/working/exp.md", &s.fm).is_err());
+        let mut n = good.clone();
+        n.fm.slug = "别的".into();
+        assert!(check_item_doc_placement("projects/demo/working/exp.md", &n.fm).is_err());
+    }
+
     fn batch_b_doc(body: &str, pending: bool) -> Document {
         Document {
             fm: Frontmatter {
@@ -1780,6 +1928,7 @@ mod tests {
                 outcome: None,
                 falsification: Some("pending".into()).filter(|_| pending),
                 priority: None,
+                extra: Vec::new(),
             },
             body: body.into(),
         }

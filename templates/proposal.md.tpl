@@ -50,4 +50,4 @@ content-hash: sha256:pending
 <!-- 采用方案 X；理由见成本对账。 -->
 
 ## 决策日志
-<!-- 快速通道 athena quick 的一行留痕追加在此：- [时间] quick: ... — <session> -->
+<!-- 快速通道（athena quick）的一行留痕由 CLI 自动追加在此 -->

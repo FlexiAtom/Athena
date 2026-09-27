@@ -69,6 +69,43 @@ pub struct Frontmatter {
     pub falsification: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
+    /// frontmatter 里**不属于协议固定键**的原始行（含注释与嵌套子结构），逐行原文保留。
+    /// serde 不认的键过去被静默丢弃：任何状态动作（连 `write`/`append`）都会把整个
+    /// frontmatter 重写成固定 7–10 键，人手工加的 `owner:`/`tags:` 一次动作就没。
+    /// 这里按行透传，不解释语义——是"保真"，不是"支持自定义字段"。
+    #[serde(skip, default)]
+    pub extra: Vec<String>,
+}
+
+/// 协议固定的 frontmatter 键（`extra` 的反面即除此之外的顶层键）。
+const KNOWN_FM_KEYS: &[&str] = &[
+    "slug",
+    "kind",
+    "status",
+    "project",
+    "updated-by",
+    "updated-at",
+    "content-hash",
+    "outcome",
+    "falsification",
+    "priority",
+];
+
+/// 摘出 frontmatter 中非固定键的顶层行，连带其缩进的子行/空行一起保留。
+fn unknown_fm_lines(fm_str: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut keeping = false;
+    for line in fm_str.lines() {
+        let top_level = !line.starts_with([' ', '\t']) && !line.trim().is_empty();
+        if top_level {
+            let key = line.split(':').next().unwrap_or("").trim();
+            keeping = !key.is_empty() && !KNOWN_FM_KEYS.contains(&key);
+        }
+        if keeping {
+            out.push(line.to_string());
+        }
+    }
+    out
 }
 
 /// 一个工作项 = 一个文件（§13.1）。frontmatter + Markdown 正文。
@@ -91,20 +128,26 @@ impl Document {
             path: path.display().to_string(),
             message: "缺少 YAML frontmatter 分隔线 `---`（§9.1）".into(),
         })?;
-        let fm: Frontmatter = serde_yaml::from_str(fm_str).map_err(|e| Error::Parse {
+        let mut fm: Frontmatter = serde_yaml::from_str(fm_str).map_err(|e| Error::Parse {
             path: path.display().to_string(),
             message: format!("frontmatter 解析失败: {e}"),
         })?;
+        fm.extra = unknown_fm_lines(fm_str);
         Ok(Document { fm, body })
     }
 
     /// 序列化为完整文件文本，并把 content-hash 更新为正文当前哈希。
     pub fn render(&mut self) -> String {
         self.fm.content_hash = content_hash(&self.body);
-        let fm_yaml = serde_yaml::to_string(&self.fm)
+        let mut fm_yaml = serde_yaml::to_string(&self.fm)
             .unwrap_or_else(|_| "error".into())
             .trim_end()
             .to_string();
+        // 非固定键原样回填（顺序保持在固定键之后）。
+        if !self.fm.extra.is_empty() {
+            fm_yaml.push('\n');
+            fm_yaml.push_str(&self.fm.extra.join("\n"));
+        }
         format!("---\n{fm_yaml}\n---\n{}", self.body)
     }
 
@@ -216,6 +259,7 @@ mod tests {
                 outcome: None,
                 falsification: None,
                 priority: None,
+                extra: Vec::new(),
             },
             body: "\n# foo\n\n## 反证实验\n".into(),
         };
@@ -237,5 +281,26 @@ mod tests {
     fn parse_missing_frontmatter_errors() {
         let e = Document::parse(Path::new("x.md"), "# no frontmatter");
         assert!(matches!(e, Err(Error::Parse { .. })));
+    }
+
+    /// 回归（C18）：serde 不认的顶层键过去被整个 frontmatter 重写静默吞掉。
+    #[test]
+    fn unknown_frontmatter_keys_survive_a_roundtrip() {
+        let raw = "---\nslug: foo\nkind: proposal\nstatus: pool\nproject: demo\nupdated-by: s1\nupdated-at: t\ncontent-hash: sha256:pending\nowner: 张三\ntags:\n  - audit\n  - urgent\n# 手工备注\n---\n\n# foo\n\n## 反证实验\n";
+        let mut doc = Document::parse(Path::new("foo.md"), raw).unwrap();
+        let first = doc.render();
+        for want in ["owner: 张三", "tags:", "  - audit", "  - urgent", "# 手工备注"] {
+            assert!(first.contains(want), "自定义键 {want} 必须原样落地：\n{first}");
+        }
+        // 再读再写：不重复堆叠、不丢失。
+        let mut again = Document::parse(Path::new("foo.md"), &first).unwrap();
+        let second = again.render();
+        assert_eq!(
+            second.matches("owner: 张三").count(),
+            1,
+            "重复渲染不应堆叠：\n{second}"
+        );
+        assert_eq!(second, first, "render 应幂等");
+        assert_eq!(again.fm.slug, "foo", "固定键照常解析");
     }
 }
